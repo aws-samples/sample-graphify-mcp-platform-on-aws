@@ -1,0 +1,10 @@
+{
+  "name": "graphify-playground-stream",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.33.3",
+    "aws-jwt-verify": "^5.2.1"
+  }
+}

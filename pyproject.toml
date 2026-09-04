@@ -1,0 +1,20 @@
+[project]
+name = "aws-graphify-mcp-platform"
+version = "0.1.0"
+description = "Deploy graphify as a multi-tenant remote MCP server platform on ECS Fargate, with an S3/CodeBuild graph-build pipeline, change-detection polling, and a Cognito console"
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib>=2.267.0,<3",
+    "constructs>=10.0.0,<11",
+    "boto3>=1.42.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "cdk-nag>=2.35,<3",
+]

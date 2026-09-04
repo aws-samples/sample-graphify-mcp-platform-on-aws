@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graphify MCP Platform Setup</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='4' cy='4' r='2.4' fill='%234F46E5'/%3E%3Ccircle cx='12' cy='6' r='2' fill='%237C3AED'/%3E%3Ccircle cx='7' cy='12' r='2' fill='%234F46E5'/%3E%3Cpath d='M4 4L12 6M4 4L7 12M12 6L7 12' stroke='%234F46E5' stroke-width='1'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+<style>
+  /* ---- Corporate Trust design tokens ---- */
+  :root {
+    --bg: #F8FAFC;            /* slate-50 */
+    --surface: #FFFFFF;
+    --primary: #4F46E5;       /* indigo-600 */
+    --secondary: #7C3AED;     /* violet-600 */
+    --ink: #0F172A;           /* slate-900 */
+    --muted: #64748B;         /* slate-500 */
+    --success: #10B981;       /* emerald-500 */
+    --warn: #D97706;          /* amber-600 */
+    --danger: #DC2626;        /* red-600 */
+    --border: #E2E8F0;        /* slate-200 */
+    --border-soft: #F1F5F9;   /* slate-100 */
+    --indigo-50: #EEF2FF;
+    --violet-50: #F5F3FF;
+    --grad: linear-gradient(135deg, #4F46E5, #7C3AED);
+    --shadow-card: 0 4px 20px -2px rgba(79, 70, 229, 0.10);
+    --shadow-card-hover: 0 10px 25px -5px rgba(79, 70, 229, 0.15), 0 8px 10px -6px rgba(79, 70, 229, 0.10);
+    --shadow-btn: 0 4px 14px 0 rgba(79, 70, 229, 0.30);
+    --shadow-glow: 0 0 20px rgba(79, 70, 229, 0.50);
+    --font: 'Plus Jakarta Sans', 'Apple SD Gothic Neo', 'Pretendard', -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: var(--font); font-size: 15px; line-height: 1.65;
+    min-height: 100vh; overflow-x: hidden; position: relative;
+  }
+  /* Atmospheric blur orbs */
+  .orb { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; z-index: 0; }
+  .orb-1 { width: 520px; height: 520px; top: -180px; right: -140px;
+    background: radial-gradient(circle, rgba(124,58,237,0.16), rgba(79,70,229,0.05) 70%); }
+  .orb-2 { width: 440px; height: 440px; bottom: -160px; left: -160px;
+    background: radial-gradient(circle, rgba(79,70,229,0.13), rgba(124,58,237,0.04) 70%); }
+
+  main { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; padding: 56px 20px 96px; }
+
+  /* ---- Header ---- */
+  header.hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+    flex-wrap: wrap; margin-bottom: 36px; }
+  h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+  h1 .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); margin-top: 10px; max-width: 42rem; font-size: 0.95rem; }
+  .lang-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); padding: 3px; box-shadow: var(--shadow-card); flex: none; }
+  .lang-toggle button { border: 0; background: transparent; color: var(--muted); font: inherit;
+    font-size: 0.78rem; font-weight: 600; padding: 5px 14px; border-radius: 999px; cursor: pointer;
+    transition: all 0.2s ease-out; box-shadow: none; }
+  .lang-toggle button.active { background: var(--grad); color: #fff; box-shadow: var(--shadow-btn); }
+
+  /* ---- Cards / sections ---- */
+  section { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px;
+    padding: 26px 28px; margin-bottom: 20px; box-shadow: var(--shadow-card);
+    transition: box-shadow 0.2s ease-out, transform 0.2s ease-out; }
+  section:hover { box-shadow: var(--shadow-card-hover); }
+  h2 { font-size: 1.06rem; font-weight: 700; letter-spacing: -0.01em;
+    margin-bottom: 18px; display: flex; align-items: center; gap: 12px; }
+  .stepno { display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 26px; height: 26px; border-radius: 50%; background: var(--grad); color: #fff;
+    font-size: 0.8rem; font-weight: 700; box-shadow: var(--shadow-glow); }
+
+  /* ---- Forms ---- */
+  label { display: block; font-size: 0.78rem; font-weight: 600; color: #334155; margin-bottom: 5px; }
+  input, select { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+    font: inherit; font-size: 0.9rem; background: var(--surface); color: var(--ink);
+    transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out; }
+  input:focus, select:focus { outline: none; border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.35), 0 0 0 1px #fff inset; }
+  input::placeholder { color: #94A3B8; }
+  .row { display: flex; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 170px; }
+  .row > .grow2 { flex: 2; }
+  .row > .tail { flex: none; align-self: flex-end; }
+
+  /* ---- Buttons ---- */
+  button { font: inherit; font-size: 0.88rem; font-weight: 600; cursor: pointer;
+    padding: 9px 20px; border-radius: 999px; border: 1px solid transparent;
+    background: var(--grad); color: #fff; box-shadow: var(--shadow-btn);
+    transition: all 0.2s ease-out; min-height: 40px; }
+  button:hover:not(:disabled) { transform: translateY(-2px);
+    box-shadow: 0 8px 20px 0 rgba(79, 70, 229, 0.40); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button.ghost { background: var(--surface); color: #334155; border-color: var(--border); box-shadow: none; }
+  button.ghost:hover:not(:disabled) { background: var(--bg); border-color: #CBD5E1;
+    box-shadow: var(--shadow-card); }
+  button.danger { background: var(--surface); color: var(--danger); border-color: #FECACA; box-shadow: none; }
+  button.danger:hover:not(:disabled) { background: #FEF2F2; border-color: var(--danger); box-shadow: none; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+  button:focus-visible, .lang-toggle button:focus-visible {
+    outline: none; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--primary); }
+  .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+
+  /* ---- Env checks ---- */
+  .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 8px 22px; margin-top: 16px; font-size: 0.88rem; }
+  .checks > div { padding-left: 14px; position: relative; }
+  .checks > div::before { content: ''; position: absolute; left: 0; top: 0.62em;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--grad); }
+  .ok { color: var(--primary); font-weight: 600; }
+  .good { color: var(--success); font-weight: 600; }
+  .bad { color: var(--danger); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+
+  code { font-family: var(--mono); font-size: 0.82em; background: var(--indigo-50);
+    color: #3730A3; padding: 1px 6px; border-radius: 5px; }
+  .hint { font-size: 0.79rem; color: var(--muted); margin-top: 10px; }
+
+  /* ---- Job log (dark CTA-style panel) ---- */
+  #jobstate { font-size: 0.82rem; font-weight: 600; margin-bottom: 10px; color: var(--muted); }
+  #jobstate.running { color: var(--primary); }
+  #jobstate.failed { color: var(--danger); }
+  #jobstate.done { color: var(--success); }
+  #log { background: linear-gradient(160deg, #1E1B4B, #0F172A 60%); color: #C7D2FE;
+    border-radius: 12px; padding: 16px 18px; height: 260px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; font-family: var(--mono);
+    font-size: 0.76rem; line-height: 1.55; box-shadow: inset 0 2px 12px rgba(0,0,0,0.35); }
+
+  /* ---- Table ---- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.83rem; }
+  th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted); font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .pill { display: inline-block; padding: 2px 11px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }
+  .pill.READY { background: #D1FAE5; color: #047857; }
+  .pill.BUILDING { background: #FEF3C7; color: #B45309; }
+  .pill.FAILED { background: #FEE2E2; color: #B91C1C; }
+  .pill.REGISTERED { background: var(--indigo-50); color: var(--primary); }
+  td .err { font-size: 0.74rem; color: var(--danger); margin-top: 3px; }
+
+  pre.block { background: #0F172A; color: #E2E8F0; border-radius: 12px;
+    padding: 14px 16px; overflow-x: auto; margin: 12px 0 0;
+    font-family: var(--mono); font-size: 0.78rem; line-height: 1.55; }
+
+  /* ---- Toast ---- */
+  .toast { position: fixed; bottom: 22px; right: 22px; z-index: 10;
+    background: var(--grad); color: #fff; padding: 11px 20px; border-radius: 10px;
+    font-size: 0.85rem; font-weight: 600; box-shadow: var(--shadow-btn);
+    opacity: 0; transform: translateY(8px); transition: all 0.25s ease-out; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  footer { text-align: center; color: #94A3B8; font-size: 0.75rem; margin-top: 40px; }
+
+  @media (max-width: 560px) {
+    main { padding: 32px 14px 64px; }
+    section { padding: 20px 18px; }
+    .row > .tail { width: 100%; }
+    .row > .tail button { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+    button:hover:not(:disabled) { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="orb orb-1" aria-hidden="true"></div>
+<div class="orb orb-2" aria-hidden="true"></div>
+<main>
+  <header class="hero">
+    <div>
+      <h1><span data-i18n="title_plain">Graphify</span> <span class="grad">MCP Platform Setup</span></h1>
+      <p class="sub" data-i18n="subtitle">로컬 AWS 자격증명으로 graphify MCP 서버 스택을 배포·운영합니다. 이 콘솔은 127.0.0.1 전용입니다.</p>
+    </div>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button id="lang-ko" type="button">한국어</button>
+      <button id="lang-en" type="button">EN</button>
+    </div>
+  </header>
+
+  <section id="sec-env">
+    <h2><span class="stepno">1</span><span data-i18n="s1">환경 확인</span></h2>
+    <div class="row">
+      <div><label for="profile" data-i18n="l_profile">AWS 프로파일</label><select id="profile"></select></div>
+      <div><label for="region" data-i18n="l_region">리전</label>
+        <select id="region">
+          <option>ap-northeast-2</option><option>us-west-2</option><option>us-east-1</option>
+          <option>ap-northeast-1</option><option>eu-central-1</option>
+        </select></div>
+      <div class="tail"><button id="btn-check" data-i18n="b_check">자격증명 확인</button></div>
+    </div>
+    <div id="envout" class="checks"></div>
+  </section>
+
+  <section>
+    <h2><span class="stepno">2</span><span data-i18n="s2">패키징 &amp; 배포</span></h2>
+    <div class="row">
+      <div><label for="opt-runtime-name" data-i18n="l_rtname">런타임 이름 (선택, 하이픈 불가)</label><input id="opt-runtime-name" placeholder="graphify_mcp"></div>
+      <div><label for="opt-default-repo" data-i18n="l_defrepo">기본 레포 ID (선택)</label><input id="opt-default-repo" placeholder="github__psf__requests__main"></div>
+      <div><label for="opt-token-arn" data-i18n="l_tokarn">GitHub 토큰 Secret ARN (선택, 폴링 인증)</label><input id="opt-token-arn" placeholder="arn:aws:secretsmanager:..."></div>
+    </div>
+    <div class="btns">
+      <button id="btn-package" class="ghost" data-i18n="b_package">① 런타임 패키징</button>
+      <button id="btn-bootstrap" class="ghost" data-i18n="b_bootstrap">② CDK Bootstrap</button>
+      <button id="btn-deploy" data-i18n="b_deploy">③ 배포 (cdk deploy)</button>
+    </div>
+    <p class="hint" data-i18n="h_deploy">패키징은 ARM64 휠 ~120MB를 받습니다(1–2분). 배포는 변경분만 반영되며 재실행해도 안전합니다.</p>
+  </section>
+
+  <section>
+    <h2><span class="stepno">3</span><span data-i18n="s3">레포 등록</span></h2>
+    <div class="row">
+      <div class="grow2"><label for="reg-url" data-i18n="l_url">git URL (https, 모든 smart-HTTP 호스트)</label><input id="reg-url" placeholder="https://github.com/psf/requests"></div>
+      <div><label for="reg-ref" data-i18n="l_ref">브랜치 (비우면 기본 브랜치 자동)</label><input id="reg-ref"></div>
+    </div>
+    <div class="row">
+      <div><label for="reg-trigger" data-i18n="l_trigger">트리거</label>
+        <select id="reg-trigger">
+          <option value="poll" data-i18n="o_poll">폴링 (모든 레포)</option>
+          <option value="webhook" data-i18n="o_webhook">푸시 webhook (소유한 GitHub 레포)</option>
+        </select></div>
+      <div><label for="reg-provider">Provider</label>
+        <select id="reg-provider"><option>auto</option><option>github</option><option>gitlab</option><option>bitbucket</option><option>generic</option></select></div>
+      <div><label for="reg-secret" data-i18n="l_secret">인증 Secret 이름 (비공개 레포, graphify/…)</label><input id="reg-secret" placeholder='{"token": "<PAT>"}'></div>
+      <div><label for="reg-interval" data-i18n="l_interval">폴링 간격(초)</label><input id="reg-interval" type="number" placeholder="900" min="60"></div>
+      <div class="tail"><button id="btn-register" data-i18n="b_register">등록 + 첫 빌드</button></div>
+    </div>
+    <div id="webhook-info" hidden>
+      <p class="hint" data-i18n="h_webhook">푸시 webhook은 레포 관리자만 설치할 수 있습니다(= 소유 검증). 등록 후 GitHub → Settings → Webhooks → Add webhook에 아래 값을 넣으세요. Content type은 application/json, 이벤트는 push만. webhook 유실 대비 6시간 안전 폴링이 함께 동작합니다.</p>
+      <pre class="block" id="webhook-json"></pre>
+      <div class="btns" style="margin-top:8px"><button id="btn-copy-webhook" class="ghost" data-i18n="b_copy_secret">Secret 복사</button></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span data-i18n="s_log">작업 로그</span></h2>
+    <!-- No data-i18n here: a language switch must never wipe a live job log. -->
+    <div id="jobstate">대기 중</div>
+    <div id="log">아직 실행한 작업이 없습니다.</div>
+  </section>
+
+  <section>
+    <h2><span class="stepno">4</span><span data-i18n="s4">상태 &amp; 연결</span></h2>
+    <div class="btns" style="margin-bottom:14px; align-items:center">
+      <button id="btn-repos" class="ghost" data-i18n="b_repos">레지스트리 새로고침</button>
+      <select id="smoke-repo" style="width:auto; min-width:200px" aria-label="smoke test target"></select>
+      <button id="btn-smoke" class="ghost" data-i18n="b_smoke">스모크 테스트</button>
+      <button id="btn-mcp" class="ghost" data-i18n="b_mcp">MCP 설정 보기</button>
+    </div>
+    <div class="tablewrap"><table id="repos" hidden>
+      <thead><tr><th>repo_id</th><th>provider</th><th>ref</th><th data-i18n="t_status">상태</th><th>last_built</th><th>graph</th><th data-i18n="t_updated">갱신</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div id="mcpout" hidden>
+      <pre class="block" id="mcpjson"></pre>
+      <div class="btns" style="margin-top:10px"><button id="btn-copy" class="ghost" data-i18n="b_copy">클립보드 복사</button></div>
+      <p class="hint" data-i18n="h_mcp">Claude Code: 프로젝트의 .mcp.json에 붙여넣기. 멀티레포는 툴 호출에 project_path=/tmp/graphs/&lt;repo_id&gt; 전달.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span data-i18n="s_teardown">정리</span></h2>
+    <div class="row">
+      <div><label for="destroy-confirm" data-i18n="l_destroy">스택 전체 삭제 — 확인을 위해 GraphifyMcpPlatform 입력</label><input id="destroy-confirm"></div>
+      <div class="tail"><button id="btn-destroy" class="danger">cdk destroy</button></div>
+    </div>
+  </section>
+
+  <footer>graphify-mcp-platform · local setup console · 127.0.0.1</footer>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ------------------------------------------------------------------ i18n --
+const I18N = {
+  ko: {
+    title_plain: "Graphify", subtitle: "로컬 AWS 자격증명으로 graphify MCP 서버 스택을 배포·운영합니다. 이 콘솔은 127.0.0.1 전용입니다.",
+    s1: "환경 확인", l_profile: "AWS 프로파일", l_region: "리전", b_check: "자격증명 확인",
+    s2: "패키징 & 배포", l_rtname: "런타임 이름 (선택, 하이픈 불가)", l_defrepo: "기본 레포 ID (선택)",
+    l_tokarn: "GitHub 토큰 Secret ARN (선택, 폴링 인증)",
+    b_package: "① 런타임 패키징", b_bootstrap: "② CDK Bootstrap", b_deploy: "③ 배포 (cdk deploy)",
+    h_deploy: "패키징은 ARM64 휠 ~120MB를 받습니다(1–2분). 배포는 변경분만 반영되며 재실행해도 안전합니다.",
+    s3: "레포 등록", l_url: "git URL (https, 모든 smart-HTTP 호스트)", l_ref: "브랜치 (비우면 기본 브랜치 자동)",
+    l_secret: "인증 Secret 이름 (비공개 레포, graphify/…)", l_interval: "폴링 간격(초)", b_register: "등록 + 첫 빌드",
+    l_trigger: "트리거", o_poll: "폴링 (모든 레포)", o_webhook: "푸시 webhook (소유한 GitHub 레포)",
+    h_webhook: "푸시 webhook은 레포 관리자만 설치할 수 있습니다(= 소유 검증). 등록 후 GitHub → Settings → Webhooks → Add webhook에 아래 값을 넣으세요. Content type은 application/json, 이벤트는 push만. webhook 유실 대비 6시간 안전 폴링이 함께 동작합니다.",
+    b_copy_secret: "Secret 복사",
+    s_log: "작업 로그", j_idle: "대기 중", log_empty: "아직 실행한 작업이 없습니다.",
+    s4: "상태 & 연결", b_repos: "레지스트리 새로고침", b_smoke: "스모크 테스트", b_mcp: "MCP 설정 보기",
+    t_status: "상태", t_updated: "갱신", b_copy: "클립보드 복사",
+    h_mcp: "Claude Code: 프로젝트의 .mcp.json에 붙여넣기. graphify-all은 병합 그래프로 모든 레포를 한 번에 검색하고, 레포별 항목은 해당 레포 전용 런타임입니다.",
+    s_teardown: "정리", l_destroy: "스택 전체 삭제 — 확인을 위해 GraphifyMcpPlatform 입력",
+    env_account: "계정", env_region: "리전", env_bootstrap: "CDK Bootstrap", env_pkg: "런타임 패키지",
+    env_stack: "스택", env_cred: "자격증명", env_err: "오류",
+    v_done: "완료", v_need2: "필요 → ②", v_need1: "필요 → ①", v_ready: "준비됨", v_missing: "없음",
+    v_checking: "확인 중…", v_chain: "(환경변수/기본 체인)",
+    run_package: "런타임 패키징", run_bootstrap: "CDK bootstrap", run_deploy: "cdk deploy",
+    run_register: "레포 등록", run_smoke: "스모크 테스트", run_destroy: "cdk destroy",
+    j_running: "실행 중", j_done: "완료", j_failed: "실패",
+    m_urlreq: "git URL을 입력하세요.", m_copied: "복사됨", m_jobfail: "작업이 실패했습니다. 로그를 확인하세요.",
+    m_pollerr: "폴링 오류", m_jobgone: "서버가 재시작되어 작업 추적이 끊겼습니다.",
+    m_confirm: "확인 문자열이 일치하지 않습니다.",
+    o_default: "(기본 그래프)",
+  },
+  en: {
+    title_plain: "Graphify", subtitle: "Deploy and operate the graphify MCP server stack with your local AWS credentials. This console binds to 127.0.0.1 only.",
+    s1: "Environment", l_profile: "AWS profile", l_region: "Region", b_check: "Verify credentials",
+    s2: "Package & Deploy", l_rtname: "Runtime name (optional, no hyphens)", l_defrepo: "Default repo ID (optional)",
+    l_tokarn: "GitHub token Secret ARN (optional, for polling)",
+    b_package: "① Package runtime", b_bootstrap: "② CDK Bootstrap", b_deploy: "③ Deploy (cdk deploy)",
+    h_deploy: "Packaging downloads ~120 MB of ARM64 wheels (1–2 min). Deploys are incremental and safe to re-run.",
+    s3: "Register repository", l_url: "git URL (https, any smart-HTTP host)", l_ref: "Branch (blank = default branch)",
+    l_secret: "Auth secret name (private repos, graphify/…)", l_interval: "Poll interval (sec)", b_register: "Register + first build",
+    l_trigger: "Trigger", o_poll: "Polling (any repo)", o_webhook: "Push webhook (owned GitHub repos)",
+    h_webhook: "Push webhooks can only be installed by a repo admin (that is the ownership gate). After registering, add a webhook in GitHub → Settings → Webhooks with the values below: content type application/json, push events only. A 6-hour safety poll backs up missed deliveries.",
+    b_copy_secret: "Copy secret",
+    s_log: "Job log", j_idle: "Idle", log_empty: "No jobs have run yet.",
+    s4: "Status & Connect", b_repos: "Refresh registry", b_smoke: "Smoke test", b_mcp: "Show MCP config",
+    t_status: "Status", t_updated: "Updated", b_copy: "Copy to clipboard",
+    h_mcp: "Claude Code: paste into your project's .mcp.json. graphify-all searches EVERY repo at once (merged graph); per-repo entries are dedicated runtimes scoped to one repository.",
+    s_teardown: "Teardown", l_destroy: "Delete the whole stack — type GraphifyMcpPlatform to confirm",
+    env_account: "Account", env_region: "Region", env_bootstrap: "CDK Bootstrap", env_pkg: "Runtime package",
+    env_stack: "Stack", env_cred: "Credentials", env_err: "Error",
+    v_done: "done", v_need2: "needed → ②", v_need1: "needed → ①", v_ready: "ready", v_missing: "missing",
+    v_checking: "checking…", v_chain: "(env / default chain)",
+    run_package: "package runtime", run_bootstrap: "CDK bootstrap", run_deploy: "cdk deploy",
+    run_register: "register repo", run_smoke: "smoke test", run_destroy: "cdk destroy",
+    j_running: "Running", j_done: "Done", j_failed: "Failed",
+    m_urlreq: "Enter a git URL.", m_copied: "Copied", m_jobfail: "Job failed — check the log.",
+    m_pollerr: "Polling error", m_jobgone: "The server restarted; job tracking was lost.",
+    m_confirm: "Confirmation text does not match.",
+    o_default: "(default graph)",
+  },
+};
+let lang = localStorage.getItem("gac-lang")
+  || ((navigator.language || "").toLowerCase().startsWith("ko") ? "ko" : "en");
+const t = (key) => (I18N[lang] && I18N[lang][key]) || I18N.ko[key] || key;
+
+let logTouched = false;
+function applyI18n() {
+  document.documentElement.lang = lang;
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    const key = el.getAttribute("data-i18n");
+    if (I18N[lang][key] !== undefined) el.textContent = I18N[lang][key];
+  }
+  // Job panel is dynamic: retranslate only when idle and never a live log.
+  if (!state.job && !logTouched) {
+    $("jobstate").textContent = t("j_idle");
+    $("jobstate").className = "";
+    $("log").textContent = t("log_empty");
+  }
+  const smokeDefault = $("smoke-repo").querySelector('option[value=""]');
+  if (smokeDefault) smokeDefault.textContent = t("o_default");
+  $("lang-ko").classList.toggle("active", lang === "ko");
+  $("lang-en").classList.toggle("active", lang === "en");
+}
+function setLang(l) { lang = l; localStorage.setItem("gac-lang", l); applyI18n(); envCheck(); }
+$("lang-ko").onclick = () => setLang("ko");
+$("lang-en").onclick = () => setLang("en");
+
+// ------------------------------------------------------------------ utils --
+const state = { job: null, timer: null };
+function toast(msg) {
+  const el = $("toast"); el.textContent = msg; el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 2600);
+}
+function ctx() { return { profile: $("profile").value, region: $("region").value }; }
+function qs() { const c = ctx(); return `profile=${encodeURIComponent(c.profile)}&region=${encodeURIComponent(c.region)}`; }
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `${r.status} ${r.statusText}`);
+  return data;
+}
+// Build a check line with DOM APIs — registry/AWS strings never hit innerHTML.
+function checkLine(label, cls, value) {
+  const div = document.createElement("div");
+  div.append(`${label}: `);
+  const span = document.createElement("span");
+  span.className = cls; span.textContent = value;
+  div.appendChild(span);
+  return div;
+}
+
+// ------------------------------------------------------- profiles / env --
+async function loadProfiles() {
+  const d = await api("/api/profiles");
+  const sel = $("profile");
+  sel.innerHTML = "";
+  const opts = [...d.profiles];
+  if (d.env_credentials || opts.length === 0) opts.unshift("");
+  for (const p of opts) {
+    const o = document.createElement("option");
+    o.value = p; o.textContent = p || t("v_chain");
+    sel.appendChild(o);
+  }
+  if (d.env_profile && opts.includes(d.env_profile)) sel.value = d.env_profile;
+  else if (opts.includes("")) sel.value = "";
+}
+
+async function envCheck() {
+  const out = $("envout");
+  out.replaceChildren(checkLine(t("env_cred"), "warn", t("v_checking")));
+  try {
+    const d = await api(`/api/env?${qs()}`);
+    if (d.identity_error) { out.replaceChildren(checkLine(t("env_cred"), "bad", d.identity_error)); return; }
+    const lines = [
+      checkLine(t("env_account"), "ok", `${d.identity.account} (${d.identity.arn.split("/").slice(-2).join("/")})`),
+      checkLine(t("env_region"), "ok", d.region),
+      checkLine("Node.js", d.tools.node ? "ok" : "bad", d.tools.node || t("v_missing")),
+      checkLine("uv", d.tools.uv ? "ok" : "bad", d.tools.uv || t("v_missing")),
+      checkLine(t("env_bootstrap"), d.bootstrapped ? "good" : "warn", d.bootstrapped ? t("v_done") : t("v_need2")),
+      checkLine(t("env_pkg"), d.runtime_pkg ? "good" : "warn", d.runtime_pkg ? t("v_ready") : t("v_need1")),
+      checkLine(t("env_stack"), d.stack.status !== "NOT_DEPLOYED" ? "good" : "warn", d.stack.status),
+    ];
+    if (d.stack.outputs.RuntimeArn) lines.push(checkLine("Runtime", "good", d.stack.outputs.RuntimeArn.split("/").pop()));
+    out.replaceChildren(...lines);
+  } catch (e) { out.replaceChildren(checkLine(t("env_err"), "bad", e.message)); }
+}
+
+// -------------------------------------------------------------------- jobs --
+const JOB_BUTTONS = ["btn-package", "btn-bootstrap", "btn-deploy", "btn-register", "btn-smoke", "btn-destroy"];
+function setBusy(busy) { for (const b of JOB_BUTTONS) $(b).disabled = busy; }
+
+async function runJob(kind, options, labelKey) {
+  if (state.job) return;
+  try {
+    const d = await api("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Setup-Console": "1" },
+      body: JSON.stringify({ kind, ...ctx(), options: options || {} }),
+    });
+    state.job = { id: d.id, after: 0, labelKey, errors: 0 };
+    logTouched = true;
+    $("log").textContent = "";
+    const js = $("jobstate");
+    js.textContent = `${t("j_running")}: ${t(labelKey)}`;
+    js.className = "running";
+    setBusy(true);
+    poll();
+  } catch (e) { toast(e.message); }
+}
+
+async function poll() {
+  if (!state.job) return;
+  let d;
+  try {
+    d = await api(`/api/jobs/${state.job.id}?after=${state.job.after}`);
+    state.job.errors = 0;
+  } catch (e) {
+    // Only "no such job" (server restart) is final; transient network or
+    // server hiccups get a few retries before detaching from a live job.
+    const gone = String(e.message).includes("no such job");
+    state.job.errors += 1;
+    if (!gone && state.job.errors < 5) { state.timer = setTimeout(poll, 1500); return; }
+    $("jobstate").textContent = `${t("m_pollerr")}: ${e.message}`;
+    $("jobstate").className = "failed";
+    if (gone) toast(t("m_jobgone"));
+    setBusy(false); state.job = null;
+    return;
+  }
+  if (d.lines.length) {
+    $("log").textContent += d.lines.join("\n") + "\n";
+    $("log").scrollTop = $("log").scrollHeight;
+    state.job.after = d.next;
+  }
+  if (d.status === "running") { state.timer = setTimeout(poll, 700); return; }
+  const ok = d.status === "succeeded";
+  const js = $("jobstate");
+  js.textContent = `${ok ? t("j_done") : t("j_failed")} · ${t(state.job.labelKey)}${ok ? "" : ` (exit ${d.rc})`}`;
+  js.className = ok ? "done" : "failed";
+  setBusy(false); state.job = null;
+  if (ok && ["deploy", "register", "bootstrap"].includes(d.kind)) { envCheck(); loadRepos(); }
+  if (!ok) toast(t("m_jobfail"));
+}
+
+// ------------------------------------------------------------------ status --
+async function loadRepos() {
+  try {
+    const d = await api(`/api/repos?${qs()}`);
+    if (d.error) toast(d.error);
+    const tbl = $("repos"), tb = tbl.querySelector("tbody");
+    tb.replaceChildren();
+    // Smoke-test target selector mirrors the registry.
+    const smoke = $("smoke-repo");
+    const prev = smoke.value;
+    smoke.replaceChildren();
+    const defOpt = document.createElement("option");
+    defOpt.value = ""; defOpt.textContent = t("o_default");
+    smoke.appendChild(defOpt);
+    for (const r of (d.repos || []).filter((x) => x.status === "READY")) {
+      const o = document.createElement("option");
+      o.value = r.repo_id; o.textContent = r.repo_id;
+      smoke.appendChild(o);
+    }
+    if (prev && [...smoke.options].some((o) => o.value === prev)) smoke.value = prev;
+    else if (smoke.options.length > 1) smoke.selectedIndex = 1;
+    if (!d.deployed) { tbl.hidden = true; return; }
+    for (const r of d.repos) {
+      const tr = document.createElement("tr");
+      const cells = [];
+      const idCode = document.createElement("code"); idCode.textContent = r.repo_id || "";
+      cells.push(idCode);
+      cells.push(r.provider || "", r.ref || "");
+      const st = document.createElement("span");
+      st.className = `pill ${r.status || ""}`; st.textContent = r.status || "";
+      const stWrap = document.createElement("div"); stWrap.appendChild(st);
+      if (r.last_error) { const e = document.createElement("div"); e.className = "err"; e.textContent = r.last_error; stWrap.appendChild(e); }
+      cells.push(stWrap);
+      const sha = document.createElement("code"); sha.textContent = r.last_built_sha || "—";
+      cells.push(sha);
+      cells.push(r.graph_bytes ? (r.graph_bytes / 1e6).toFixed(2) + " MB" : "—");
+      cells.push((r.updated_at || "").replace("T", " ").replace("Z", ""));
+      for (const c of cells) { const td = document.createElement("td"); td.append(c); tr.appendChild(td); }
+      tb.appendChild(tr);
+    }
+    tbl.hidden = d.repos.length === 0;
+  } catch (e) { toast(e.message); }
+}
+
+async function showMcp() {
+  try {
+    const d = await api(`/api/mcp-config?${qs()}`);
+    $("mcpjson").textContent = JSON.stringify(d.config, null, 2);
+    $("mcpout").hidden = false;
+  } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------- wire up --
+$("btn-check").onclick = envCheck;
+$("btn-package").onclick = () => runJob("package", {}, "run_package");
+$("btn-bootstrap").onclick = () => runJob("bootstrap", {}, "run_bootstrap");
+$("btn-deploy").onclick = () => runJob("deploy", {
+  runtime_name: $("opt-runtime-name").value,
+  default_repo_id: $("opt-default-repo").value,
+  github_token_secret_arn: $("opt-token-arn").value,
+}, "run_deploy");
+$("btn-register").onclick = () => {
+  if (!$("reg-url").value.trim()) { toast(t("m_urlreq")); return; }
+  runJob("register", {
+    url: $("reg-url").value, ref: $("reg-ref").value, provider: $("reg-provider").value,
+    auth_secret: $("reg-secret").value, poll_interval: $("reg-interval").value,
+    trigger: $("reg-trigger").value,
+  }, "run_register");
+};
+$("reg-trigger").onchange = async () => {
+  const box = $("webhook-info");
+  if ($("reg-trigger").value !== "webhook") { box.hidden = true; return; }
+  try {
+    const d = await api(`/api/webhook-info?${qs()}`);
+    state.webhookSecret = d.secret;
+    $("webhook-json").textContent = `Payload URL : ${d.url}\nContent type: application/json\nSecret      : ${d.secret}\nEvents      : push`;
+    box.hidden = false;
+  } catch (e) { toast(e.message); }
+};
+$("btn-copy-webhook").onclick = async () => {
+  try { await navigator.clipboard.writeText(state.webhookSecret || ""); toast(t("m_copied")); }
+  catch { toast("clipboard unavailable"); }
+};
+$("btn-smoke").onclick = () => runJob("smoke", { repo_id: $("smoke-repo").value }, "run_smoke");
+$("btn-repos").onclick = loadRepos;
+$("btn-mcp").onclick = showMcp;
+$("btn-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("mcpjson").textContent); toast(t("m_copied")); }
+  catch { toast("clipboard unavailable"); }
+};
+$("btn-destroy").onclick = () => {
+  if ($("destroy-confirm").value.trim() !== "GraphifyMcpPlatform") { toast(t("m_confirm")); return; }
+  runJob("destroy", { confirm: "GraphifyMcpPlatform" }, "run_destroy");
+};
+
+applyI18n();
+loadProfiles().then(envCheck).then(loadRepos);
+</script>
+</body>
+</html>

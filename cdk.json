@@ -1,0 +1,7 @@
+{
+  "app": "uv run python cdk/app.py",
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true
+  }
+}

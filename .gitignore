@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# CDK / build outputs
+cdk.out/
+dist/
+*.whl
+
+# Node (restore with `npm ci` in lambdas/playground_stream/ before deploy)
+node_modules/
+
+# Local tooling artifacts
+.DS_Store
+.playwright-mcp/
+.claude/settings.local.json
+
+# Contains a live data-plane API key — regenerate with scripts/print_mcp_config.py
+.mcp.json
+
+# Pre-publication scan reports (PCSR attachments — contain account ids / internal links; never publish)
+scan-results/
+
+# Account-specific CDK context (AZ lookups for the deploying account)
+cdk.context.json
