@@ -27,6 +27,10 @@ RUN pip install --no-cache-dir --no-deps graphifyy==0.9.51 \
       "boto3==1.43.86" \
  && pip uninstall -y pip
 
+# Candidate build-time patch: fail closed on version/source hash drift.
+COPY patch_get_node.py /app/patch_get_node.py
+RUN python /app/patch_get_node.py --apply-installed
+
 COPY entrypoint.py /app/entrypoint.py
 
 RUN useradd --create-home --uid 1000 graphify \
