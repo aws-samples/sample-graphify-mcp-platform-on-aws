@@ -46,6 +46,7 @@ Key properties (all empirically verified during design):
 | `cdk/buildspec.py` | Inline buildspec: pinned-SHA fetch → incremental `graphify extract --code-only` → S3 publish |
 | `runtime/entrypoint.py` | Query-plane entrypoint: S3 graph sync (ETag + atomic `os.replace`) + `graphify.serve.serve_http` |
 | `runtime/Dockerfile` | Query-plane image (linux/arm64; built/pushed by `cdk deploy` via DockerImageAsset) |
+| `runtime/patch_get_node.py` | Build-only, version/SHA-guarded exact ID/unique label preference for graphifyy 0.9.51 |
 | `lambdas/poller/` | Scheduled change detection (GitHub `commits` API w/ `application/vnd.github.sha` + `If-None-Match`; git smart-HTTP fallback for non-GitHub) |
 | `lambdas/completion/` | CodeBuild state-change → DynamoDB state transitions |
 | `scripts/register_repo.py` | Register a repo (resolves real default branch — never assumes `main`) + first build + dedicated service |
@@ -186,11 +187,19 @@ Per-repo MCP servers (never the hub) carry two platform tools on top of graphify
 - `search_code(pattern, glob?, regex?, ignore_case?, max_results?)` — full-text search over the repo's source (literal by default; 1MB/file scan cap, 5s budget, 100-result cap).
 - `read_source(file, start_line?, end_line?)` — read a file range (≤400 numbered lines), grounded by graph nodes' `source_file`/`source_location`.
 
-How it works: each build also publishes `repos/<id>/latest/src.tar.gz` (checkout minus `.git`, ≤200MB); the task's sync thread pulls it next to the graph (safe extraction via `tarfile filter="data"` + size caps, atomic symlink flip) and an ASGI wrapper in `runtime/entrypoint.py` adds the tools at the MCP JSON-RPC layer — graphify itself is untouched. The hub (`all`) serves the merged graph only and never gets a snapshot. After changing the entrypoint (a `cdk deploy` publishes the new image), roll existing per-repo services forward with:
+How it works: each build also publishes `repos/<id>/latest/src.tar.gz` (checkout minus `.git`, ≤200MB); the task's sync thread pulls it next to the graph (safe extraction via `tarfile filter="data"` + size caps, atomic symlink flip) and an ASGI wrapper in `runtime/entrypoint.py` adds the tools at the MCP JSON-RPC layer. The image also applies the bounded `get_node` patch described below. The hub (`all`) serves the merged graph only and never gets a snapshot. After changing the entrypoint (a `cdk deploy` publishes the new image), roll existing per-repo services forward with:
 
 ```bash
 uv run python scripts/update_repo_runtimes.py --rebuild   # services -> new image, builds -> publish snapshots
 ```
+
+### Exact node lookup
+
+`runtime/patch_get_node.py` runs during the image build, after installing the pinned `graphifyy==0.9.51`. It changes only `_tool_get_node`: prefer an exact case-insensitive ID, then a **unique** exact case-insensitive label, then the original first substring match. Ambiguous labels, whitespace/Unicode normalization, missing-result text, and the other graph tools retain their existing behavior. Use an explicit ID when labels are ambiguous.
+
+The helper accepts only the reviewed original `serve.py` SHA-256 `830df558a4b6843c9ad7a253cde3431379e1ecebb280a8028ba2bd3da3d56e54` or its already-patched SHA `fc86bcfa3d014bb6f42dbed053be3c82e35ede769c20c891c3f6e0738b63e21f`. It verifies the package version, stages an atomic replacement, and fails the build on unexpected contents. The package version remains 0.9.51 with a local patch; its wheel RECORD describes the original bytes. Review this helper when upgrading the dependency.
+
+This is a query-plane correction; it does not rebuild document sources or establish a QA accuracy improvement. Existing runtimes receive it when rolled to a newly built image. A document node's original `source_location` may be an Excel range such as `A273:J297`; do not pass those row numbers as `read_source` Markdown line numbers. Read the published file's numbered lines to establish the correct range.
 - Backends: `lambdas/playground/` (buffered, vendored `anthropic` SDK, ARM64) and `lambdas/playground_stream/` (Node.js, `@anthropic-ai/bedrock-sdk`, reserved concurrency so a burst can't drain the account pool the data plane shares); both scope `bedrock:InvokeModel` to Anthropic models/profiles, enforce a per-user daily token budget, and cap tokens/messages/tools/tool-result size.
 
 ```bash

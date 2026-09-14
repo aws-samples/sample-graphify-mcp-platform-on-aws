@@ -87,7 +87,7 @@ Nothing is laid out in the browser: every build precomputes a two-level layout (
 
 ![Graph explorer — hub](docs/screenshots/graph-hub.en.png)
 
-
+![Graph explorer — folder view of this repository](docs/screenshots/graph-folders.en.png)
 
 ![Graph explorer — node inspector with source viewer](docs/screenshots/graph-explorer.en.png)
 
@@ -118,11 +118,12 @@ Admins invite users (temporary password by email), reset passwords and delete ac
 
 | Tool                                                                                                     | Source        | What it does                                                                                                        |
 | -------------------------------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path` | graphify      | Semantic search over the graph, node/edge lookups, community summaries, hub nodes, statistics, path finding         |
+| `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path` | graphify      | Keyword-seeded graph traversal, node/edge lookups, community summaries, hub nodes, statistics, path finding         |
 | `search_code`                                                                                            | this platform | Full-text search over the source snapshot (literal or regex; per-repo servers only)                                 |
 | `read_source`                                                                                            | this platform | Read a numbered line range of a file, grounded by a node's `source_file`/`source_location`                          |
 | `list_prs`, `get_pr_impact`, `triage_prs`                                                                | graphify      | Listed for completeness; they need the `gh` CLI and a checkout, so they return tool-level errors in this deployment |
 
+Newly built images make `get_node` prefer an exact case-insensitive ID, then a unique exact label. Ambiguous labels retain the existing fallback; use an explicit node ID to select one. The version/SHA-guarded build patch is documented in [the engineering reference](docs/reference.md#exact-node-lookup). `read_source` line numbers refer to the published text file; an original Excel cell range is a different coordinate system.
 
 ---
 
@@ -151,8 +152,10 @@ Create the first administrator and sign in:
 
 ```bash
 uv run python scripts/create_platform_user.py --email you@example.com --admin
-# prints a one-time password and the console URL
+# prints a permanent password and the console URL (no email is sent)
 ```
+
+The user pool is invite-only, so this first account has to come from operator credentials; every later user is invited from the console's Admin tab and receives a temporary password by email. Re-running the script for an existing email resets that user's password, which is also the recovery path for a locked-out admin.
 
 Everything else can be done in the console: register a source (a public GitHub repo such as `https://github.com/psf/requests` takes 1–2 minutes to build), watch it reach **READY**, issue an API key, and connect a client. The same flow is scriptable:
 

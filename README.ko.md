@@ -87,7 +87,7 @@ git 저장소, 문서 사이트, 파일 폴더를 등록하면 지식 그래프�
 
 ![그래프 탐색기: 허브](docs/screenshots/graph-hub.ko.png)
 
-
+![그래프 탐색기: 이 저장소의 폴더 뷰](docs/screenshots/graph-folders.ko.png)
 
 ![그래프 탐색기: 항목 상세와 소스 뷰어](docs/screenshots/graph-explorer.ko.png)
 
@@ -118,11 +118,12 @@ git 저장소, 문서 사이트, 파일 폴더를 등록하면 지식 그래프�
 
 | 도구                                                                                                       | 출처       | 기능                                                              |
 | -------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------- |
-| `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path` | graphify | 그래프 의미 검색, 노드/엣지 조회, 커뮤니티 요약, 허브 노드, 통계, 경로 탐색                  |
+| `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path` | graphify | 키워드로 시작점을 찾는 그래프 탐색, 노드/엣지 조회, 커뮤니티 요약, 허브 노드, 통계, 경로 탐색                  |
 | `search_code`                                                                                            | 이 플랫폼    | 소스 스냅샷 전문 검색(리터럴 또는 정규식, 레포별 서버 전용)                             |
 | `read_source`                                                                                            | 이 플랫폼    | 노드의 `source_file`/`source_location`을 근거로 파일의 지정 줄 범위를 번호와 함께 읽기 |
 | `list_prs`, `get_pr_impact`, `triage_prs`                                                                | graphify | 목록에는 보이지만 `gh` CLI와 체크아웃이 필요해 이 배포에서는 도구 수준 오류를 돌려줍니다           |
 
+새로 빌드한 이미지의 `get_node`는 대소문자를 구분하지 않는 정확한 ID, 유일한 정확한 이름 순서로 선택합니다. 같은 이름이 여러 개면 기존 선택 방식을 유지하므로 명시적 노드 ID를 사용하세요. 버전·SHA를 확인하는 빌드 패치는 [엔지니어링 레퍼런스](docs/reference.md#exact-node-lookup)에 설명돼 있습니다. `read_source`의 줄 번호는 게시된 텍스트 파일 기준이며, 원본 Excel 셀 범위와는 다릅니다.
 
 ---
 
@@ -151,8 +152,10 @@ npx -y aws-cdk@2.1139.0 deploy                   # 약 10분. 쿼리 플레인 �
 
 ```bash
 uv run python scripts/create_platform_user.py --email you@example.com --admin
-# 1회용 비밀번호와 콘솔 URL을 출력합니다
+# 영구 비밀번호와 콘솔 URL을 출력합니다(메일은 발송되지 않음)
 ```
+
+유저 풀은 초대 전용이므로 첫 계정만 이렇게 운영자 자격 증명으로 만들고, 이후 사용자는 콘솔 관리자 탭에서 초대합니다(임시 비밀번호 메일 발송). 이미 있는 이메일로 다시 실행하면 그 사용자의 비밀번호를 초기화하므로, 관리자 계정이 잠겼을 때 복구 수단으로도 쓸 수 있습니다.
 
 나머지는 콘솔에서 진행합니다. 소스를 등록하고(`https://github.com/psf/requests` 같은 public GitHub 저장소는 빌드에 1~2분), **READY**가 되면 API 키를 발급받아 클라이언트를 연결합니다. 같은 흐름을 스크립트로도 실행할 수 있습니다.
 
