@@ -334,10 +334,10 @@ def handler(event, context):
                 sha = files_manifest_hash(repo_id)
                 if sha:
                     # Same suffix the build publishes as source_hash (buildspec
-                    # files fingerprint): flipping llm_images/llm_model/llm_extract
-                    # is a change, so the next tick rebuilds — including after a
+                    # files fingerprint): doc=2 migrates existing corpora to OCR;
+                    # flipping llm_images/llm_model/llm_extract also rebuilds after a
                     # build that was already in flight when the setting changed.
-                    sha = (f"{sha}|img={'1' if item.get('llm_images') == '1' else '0'}"
+                    sha = (f"{sha}|doc=2|img={'1' if item.get('llm_images') == '1' else '0'}"
                            f"|model={item.get('llm_model', '')}"
                            f"|llm={'1' if item.get('llm_extract') == '1' else '0'}")
                 if sha == item.get("last_built_sha", ""):

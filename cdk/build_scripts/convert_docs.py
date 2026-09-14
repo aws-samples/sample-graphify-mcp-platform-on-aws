@@ -41,12 +41,20 @@ with a per-document share of IMG_TOTAL_BUDGET proportional to page count.
 Images are downscaled to IMG_MAX_SIDE so each stays well under Bedrock's
 5 MB per-image ceiling.
 
-Originals stay in place (the quick-scan skips them; search_code/read_source
-refuse binaries anyway). Conversion is DETERMINISTIC — no timestamps — so an
-unchanged corpus keeps producing the same graph. Failures (encrypted PDFs,
-image-only scans, corrupt files) are skipped with a log line and never fail
-the build; the empty-graph assert in post_build still catches a corpus with
-nothing extractable at all.
+When LLM_EXTRACT=1 and LLM_IMAGES=1, pages with fewer than 50 native
+alphanumeric characters are also sent as single-page PDFs to Bedrock's
+visual document path. Their transcribed body text is saved in the Markdown
+parts, independently of the embedded-image selection budget. Model
+transcriptions are not independently verified originals; page-level
+provenance and uncertain spans are retained.
+
+Originals stay in place (search_code/read_source refuse binaries).
+Native conversion is deterministic. Model transcriptions are content/model/
+prompt-keyed and cached; they need not be identical across uncached runs.
+Conversion errors, missing requested OCR pages and page limits fail the
+conversion stage before a replacement graph is published. The structured
+report is outside the source tree so diagnostic/model audit data is not
+ingested as user documents.
 
 Sidecar frontmatter names the original as `converted_from_file` (NOT
 `source_file`: the LLM mirrors that key into its output, and graphify drops
@@ -60,13 +68,18 @@ destination is skipped).
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import os
 import re
 import shutil
 import signal
 import sys
+import threading
+import time
 import unicodedata
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -97,6 +110,8 @@ IMG_MAX_SIDE = 1280      # downscale longer side to this
 # of image XObjects) must not stall the whole build; the file is logged as
 # FAILED and the rest of the corpus proceeds.
 PDF_TIME_BUDGET_S = 600
+CONVERSION_VERSION = 2
+PDF_OCR_MIN_ALNUM = 50
 
 # Lines that read as section titles inside extracted PDF text. Promoting them
 # to markdown headings gives the graph TOPIC-named nodes ("제7장 망분리 ...")
@@ -199,7 +214,7 @@ def _write_sidecar(orig: Path, kind: str, body: str) -> bool:
     )
     data = content.encode("utf-8")
     if len(data) > MD_BYTES_CAP:
-        data = data[:MD_BYTES_CAP].decode("utf-8", "ignore").encode("utf-8")
+        raise ValueError(f"Converted sidecar exceeds {MD_BYTES_CAP} bytes; refusing silent truncation")
     dest.write_bytes(data)
     print(f"[convert_docs] {rel} -> {dest.name} ({len(data)} bytes)")
     return True
@@ -446,11 +461,15 @@ def _save_image(reader, page: int, name: str, dest: Path) -> bool:
         return False
 
 
-def convert_pdf(path: Path, image_budget: int = 0) -> bool:
-    from pypdf import PdfReader
-
+def convert_pdf(path: Path, image_budget: int = 0, *, ocr=None,
+                report: dict | None = None, ocr_workers: int = 4,
+                deadline: float | None = None) -> bool:
+    deadline = time.monotonic() + PDF_TIME_BUDGET_S if deadline is None else deadline
+    record = report if report is not None else {}
+    record.update(source_file=path.relative_to(SRC).as_posix(), format="pdf")
     dest_dir = path.with_name(path.name + ".d")
     if dest_dir.exists():
+        record.update(status="existing_unverified", reason="user sidecar already exists")
         print(f"[convert_docs] skip (sidecar exists): {dest_dir.relative_to(SRC)}", file=sys.stderr)
         return False
     # Build in a scratch dir and rename at the end: a crash half-way must not
@@ -459,8 +478,10 @@ def convert_pdf(path: Path, image_budget: int = 0) -> bool:
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     try:
-        ok = _convert_pdf_into(path, tmp_dir, image_budget)
-    except Exception:
+        ok = _convert_pdf_into(path, tmp_dir, image_budget, ocr=ocr, report=record,
+                               ocr_workers=ocr_workers, deadline=deadline)
+    except BaseException as exc:
+        record.update(status="failed", error={"type": type(exc).__name__, "message": str(exc)})
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
     if not ok:
@@ -470,14 +491,136 @@ def convert_pdf(path: Path, image_budget: int = 0) -> bool:
     return True
 
 
-def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
+def _single_page_pdf(reader, page_index: int) -> bytes:
+    """Use the existing PDF dependency; no rasterizer or OCR package required."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_page(reader.pages[page_index])
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _ocr_lines(text: str) -> list[_Line]:
+    """Keep transcription Markdown and tables; native font heuristics do not apply."""
+    out = []
+    for raw in text.splitlines():
+        raw = _CTRL_RE.sub(" ", raw).rstrip()
+        match = re.match(r"^(#{1,6})\s+(.+)$", raw)
+        if match:
+            out.append(_Line(min(4, len(match[1]) + 1), match[2]))
+        elif raw:
+            out.append(_Line(0, raw))
+    return out
+
+
+def _transcribe_pages(reader, plain: list[str], record: dict, ocr, workers: int,
+                      deadline: float | None = None) -> dict[int, dict]:
+    """Transcribe all sparse pages; never limit them to selected embedded images."""
+    if not 1 <= workers <= 8:
+        raise ValueError("DOCUMENT_OCR_WORKERS must be between 1 and 8")
+    results, requests = {}, {}
+    deadline = time.monotonic() + PDF_TIME_BUDGET_S if deadline is None else deadline
+    cancelled = threading.Event()
+    for i, text in enumerate(plain):
+        native_count = sum(c.isalnum() for c in text)
+        page = {"page": i + 1, "native_alphanumeric_characters": native_count,
+                "method": "native", "status": "native" if native_count >= PDF_OCR_MIN_ALNUM
+                else "limited_native", "ocr_requested": ocr is not None and native_count < PDF_OCR_MIN_ALNUM}
+        record["pages"].append(page)
+        if page["ocr_requested"]:
+            try:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Document deadline expired before PDF page serialization")
+                # Serialize before threading: pypdf's lazy reader is not shared between workers.
+                requests[i] = _single_page_pdf(reader, i)
+                page["status"] = "pending"
+            except Exception as exc:
+                page.update(status="failed", error={"type": type(exc).__name__, "message": str(exc)})
+    if requests:
+        print(f"[convert_docs] PDF body OCR: {record['source_file']} "
+              f"{len(requests)}/{len(plain)} page(s), model={ocr.model_id}", flush=True)
+        def process(i, data):
+            if cancelled.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("Document deadline expired before OCR page request")
+            return ocr.process_page(data, record["source_sha256"], i + 1,
+                                    deadline=deadline, cancel_event=cancelled)
+
+        pool = ThreadPoolExecutor(max_workers=workers)
+        jobs = {}
+        try:
+            jobs = {pool.submit(process, i, data): i for i, data in requests.items()}
+            for future in as_completed(jobs, timeout=max(0.0, deadline - time.monotonic())):
+                i = jobs[future]
+                page = record["pages"][i]
+                try:
+                    result = future.result()
+                    if result.get("status") not in {"transcribed", "blank"} or not isinstance(result.get("text"), str):
+                        raise ValueError("Invalid page transcription result")
+                    if result["status"] == "transcribed" and not result["text"].strip():
+                        raise ValueError("Empty page transcription")
+                    if result["status"] == "blank" and result["text"].strip():
+                        raise ValueError("Blank page returned nonempty transcription")
+                    results[i] = result
+                    uncertain = len(re.findall(r"\[(?:unreadable|illegible)\b[^\]\n]*\]", result["text"], re.I))
+                    page.update(
+                        method="bedrock_pdf_ocr",
+                        status="transcribed_uncertain" if uncertain else result["status"],
+                        model_id=result.get("model_id", ocr.model_id),
+                        cache_hit=result.get("cache_hit", False), cache_key=result.get("cache_key"),
+                        transcribed_characters=len(result["text"]),
+                        uncertain_spans=uncertain,
+                    )
+                except Exception as exc:
+                    page.update(status="failed", error={"type": type(exc).__name__, "message": str(exc)})
+        except BaseException as exc:
+            cancelled.set()
+            for future in jobs:
+                future.cancel()
+            for i in requests:
+                if record["pages"][i]["status"] == "pending":
+                    record["pages"][i].update(
+                        status="failed", error={"type": type(exc).__name__,
+                                                "message": "Document OCR interrupted or deadline expired"})
+            raise
+        finally:
+            # Running calls receive the same deadline; pending calls never start.
+            pool.shutdown(wait=True, cancel_futures=True)
+    failed = [p["page"] for p in record["pages"] if p["status"] in {"failed", "pending"}]
+    if failed:
+        raise RuntimeError(f"Requested PDF body OCR incomplete for pages {failed}: {record['source_file']}")
+    return results
+
+
+def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int, *, ocr=None,
+                      report: dict | None = None, ocr_workers: int = 4,
+                      deadline: float | None = None) -> bool:
     from pypdf import PdfReader
 
-    reader = PdfReader(str(path))
+    original_bytes = path.read_bytes()
+    reader = PdfReader(io.BytesIO(original_bytes))
     stem = path.stem
     rel = path.relative_to(SRC).as_posix()
+    record = report if report is not None else {}
+    record.update(source_file=rel, source_sha256=hashlib.sha256(original_bytes).hexdigest(),
+                  pages=[], status="processing")
+    # A PDF that requires an opening password is a known unsupported input,
+    # like a legacy Office format. Never guess a password or send it to OCR.
+    # Empty-password PDFs remain readable (for example owner-permission locks).
+    if getattr(reader, "is_encrypted", False) and not reader.decrypt(""):
+        record.update(
+            status="unsupported", reason_code="pdf_password_required",
+            reason="Opening password required; no password supplied. Original upload preserved.",
+            page_count_status="unavailable_password_required",
+        )
+        print(f"[convert_docs] unsupported (PDF password required): {rel}",
+              file=sys.stderr, flush=True)
+        return False
+    record["page_count"] = len(reader.pages)
     n_pages = min(len(reader.pages), PDF_PAGE_CAP)
-
+    if len(reader.pages) > PDF_PAGE_CAP:
+        raise ValueError(f"PDF page count {len(reader.pages)} exceeds {PDF_PAGE_CAP}; refusing silent truncation")
     # Pass 1: text + font rows per page (kept in memory: a few MB at most).
     plain: list[str] = []
     rows: list[list[tuple[float, str, str]]] = []
@@ -488,11 +631,16 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
             t, r = "", []
         plain.append(t)
         rows.append(r)
+    transcriptions = _transcribe_pages(reader, plain, record, ocr, ocr_workers, deadline)
     # Embedded images (LLM_IMAGES=1 only): choose now, write while assembling.
     chosen: dict[int, list[tuple[str, str]]] = {}
     if image_budget > 0:
         chosen = _select_images(_pdf_image_candidates(reader, n_pages), image_budget)
-    if not any(t.strip() for t in plain) and not chosen:
+    if not chosen and not any(
+            (transcriptions[i]["text"] if i in transcriptions else text).strip()
+            for i, text in enumerate(plain)):
+        record.update(status="blank" if transcriptions and all(r["status"] == "blank" for r in transcriptions.values())
+                      else "no_extractable_text")
         print(f"[convert_docs] skip (no extractable text): {rel}", file=sys.stderr)
         return False
     body = _body_size(rows)
@@ -522,7 +670,11 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
 
     for i in range(n_pages):
         page_no = i + 1
-        lines = _page_lines(rows[i], plain[i], body, outline.get(i))
+        if i in transcriptions:
+            result = transcriptions[i]
+            lines = _ocr_lines(result["text"])
+        else:
+            lines = _page_lines(rows[i], plain[i], body, outline.get(i))
         if not lines and i not in chosen:
             continue
         marker = f"##### {stem} — p.{page_no}"
@@ -535,6 +687,11 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
             nonlocal marker_written
             if not marker_written:
                 part.add(marker)
+                if i in transcriptions:
+                    model_id = _CTRL_RE.sub(" ", str(transcriptions[i].get("model_id", ocr.model_id)))
+                    part.add(f"<!-- text_method: bedrock_pdf_ocr; model: {_yaml_str(model_id)}; "
+                             f"original_page: {page_no}; uncertain_spans: {record['pages'][i].get('uncertain_spans', 0)}; "
+                             f"verify uncertain spans against the PDF -->")
                 part.last_page = page_no
                 marker_written = True
             part.add(text)
@@ -554,7 +711,9 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
             # the page becomes the title (not repeated in the body).
             if lines and lines[0].level:
                 open_part(lines[0].text, page_no)
-                start = 1
+                # Display titles are shortened, but the full heading remains
+                # in the body if any characters would otherwise be omitted.
+                start = 1 if len(lines[0].text) <= TITLE_MAX else 0
             else:
                 open_part(stem if part is None else f"{stem} (p.{page_no}~)", page_no)
             marker_written = False
@@ -563,11 +722,17 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
             if splits_here(ln.level):
                 open_part(ln.text, page_no)
                 marker_written = False
+                if len(ln.text) > TITLE_MAX:
+                    emit(f"{'#' * ln.level} {ln.text}")
                 continue  # the heading titles the new part
             emit(f"{'#' * ln.level} {ln.text}" if ln.level else ln.text)
-    if len(reader.pages) > PDF_PAGE_CAP and part is not None:
-        part.add(f"\n(truncated at {PDF_PAGE_CAP} pages)")
+        if i in transcriptions and not marker_written:
+            # A heading-only transcription still needs its original page and
+            # OCR provenance; the heading itself may have become the part title.
+            emit("")
     if not parts:
+        record.update(status="blank" if transcriptions and all(r["status"] == "blank" for r in transcriptions.values())
+                      else "no_extractable_text")
         print(f"[convert_docs] skip (no extractable text): {rel}", file=sys.stderr)
         return False
 
@@ -583,9 +748,11 @@ def _convert_pdf_into(path: Path, dest_dir: Path, image_budget: int) -> bool:
         )
         data = content.encode("utf-8")
         if len(data) > MD_BYTES_CAP:
-            data = data[:MD_BYTES_CAP].decode("utf-8", "ignore").encode("utf-8")
+            raise ValueError(f"Converted PDF part exceeds {MD_BYTES_CAP} bytes; refusing silent truncation")
         (dest_dir / f"{idx:0{width}d}-{_slug(p.title)}.md").write_bytes(data)
         total += len(data)
+    record.update(status="converted", parts=len(parts), markdown_bytes=total, saved_images=n_images,
+                  output_directory=path.name + ".d")
     print(f"[convert_docs] {rel} -> {dest_dir.name}/ ({len(parts)} part(s), {total} bytes, {n_images} image(s), "
           f"body font {body}pt, outline {'yes' if outline else 'no'})", flush=True)
     return True
@@ -616,11 +783,81 @@ def _pdf_page_counts(pdfs: list[Path]) -> dict[Path, int]:
 
 
 def main() -> int:
+    report_path = Path(os.environ.get(
+        "DOCUMENT_CONVERSION_REPORT", "/tmp/work/document-conversion-report.json")).resolve()
+    if report_path.is_relative_to(SRC.resolve()):
+        print("[convert_docs] report must be outside the source tree", file=sys.stderr)
+        return 1
     files = [p for p in sorted(SRC.rglob("*")) if p.is_file()]
     pdfs = [p for p in files if p.suffix.lower() == ".pdf"]
     # Only an LLM build with the vision path on consumes the PNGs; a quick-scan
     # build would just carry tens of MB of images nobody reads.
     with_images = os.environ.get("LLM_IMAGES", "0") == "1" and os.environ.get("LLM_EXTRACT", "0") == "1"
+    report = {
+        "schema_version": 1, "pipeline_version": CONVERSION_VERSION,
+        "converter_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "ocr_enabled": with_images, "native_alphanumeric_threshold": PDF_OCR_MIN_ALNUM,
+        "documents": [], "status": "processing",
+        "scope": "Page processing/provenance, not semantic recall or independently verified OCR accuracy. "
+                 "Unprocessed legacy Office formats are listed separately; original uploads are preserved.",
+    }
+    ocr = None
+    converted = failed = 0
+    previous_alarm = signal.getsignal(signal.SIGALRM)
+    try:
+        workers = int(os.environ.get("DOCUMENT_OCR_WORKERS", "4"))
+        if not 1 <= workers <= 8:
+            raise ValueError("DOCUMENT_OCR_WORKERS must be between 1 and 8")
+        if with_images and pdfs:
+            from document_ocr import DocumentOCR
+
+            ocr = DocumentOCR.from_env()
+            if ocr.cache_dir.is_relative_to(SRC.resolve()) or ocr.audit_path.is_relative_to(SRC.resolve()):
+                raise ValueError("OCR cache and audit must be outside the source tree")
+        converted, failed = _convert_files(files, pdfs, with_images, ocr, report, workers)
+    except Exception as exc:
+        failed += 1
+        report["error"] = {"type": type(exc).__name__, "message": str(exc)}
+        print(f"[convert_docs] FAILED setup: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    except BaseException as exc:
+        failed += 1
+        report["error"] = {"type": type(exc).__name__, "message": str(exc)}
+        raise
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_alarm)
+        pages = [p for d in report["documents"] for p in d.get("pages", [])]
+        page_statuses = Counter(p["status"] for p in pages)
+        document_statuses = Counter(d["status"] for d in report["documents"])
+        converted = document_statuses["converted"]
+        failed = max(failed, document_statuses["failed"])
+        report["totals"] = {
+            "converted_documents": converted, "failed_documents": failed,
+            "document_statuses": dict(document_statuses), "page_statuses": dict(page_statuses),
+            "pdf_pages": sum(d.get("page_count", 0) for d in report["documents"]),
+            "pdf_documents_unknown_page_count": sum(
+                d.get("format") == "pdf" and "page_count" not in d for d in report["documents"]),
+            "ocr_requested_pages": sum(p.get("ocr_requested", False) for p in pages),
+            "native_limited_pages": page_statuses["limited_native"],
+            "uncertain_pages": sum(p.get("uncertain_spans", 0) > 0 for p in pages),
+        }
+        report["ocr"] = ocr.snapshot() if ocr is not None else None
+        limited = (page_statuses["limited_native"] or document_statuses["unsupported"]
+                   or document_statuses["no_extractable_text"] or document_statuses["existing_unverified"]
+                   or document_statuses["existing_or_empty"] or page_statuses["transcribed_uncertain"])
+        report["status"] = "failed" if failed else "partial" if limited else "complete"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = report_path.with_name(report_path.name + ".tmp")
+        temp.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp.replace(report_path)
+    print(f"[convert_docs] converted {converted} document(s)" + (f", {failed} failed" if failed else ""),
+          flush=True)
+    print("[convert_docs] conversion report: " + json.dumps({
+        "status": report["status"], **report["totals"]}, ensure_ascii=False), flush=True)
+    return 1 if failed else 0
+
+
+def _convert_files(files, pdfs, with_images, ocr, report, workers) -> tuple[int, int]:
     budgets: dict[Path, int] = {}
     if with_images and pdfs:
         counts = _pdf_page_counts(pdfs)
@@ -643,28 +880,39 @@ def main() -> int:
     signal.signal(signal.SIGALRM, _alarm)
     for path in files:
         ext = path.suffix.lower()
+        if ext not in {".pdf", ".docx", ".xlsx"}:
+            if ext in {".pptx", ".ppt", ".doc", ".xls"}:
+                report["documents"].append({
+                    "source_file": path.relative_to(SRC).as_posix(), "format": ext.lstrip("."),
+                    "status": "unsupported", "reason": "not handled by the document converter",
+                })
+            continue
+        record = {"source_file": path.relative_to(SRC).as_posix(), "format": ext.lstrip("."),
+                  "status": "processing"}
+        report["documents"].append(record)
         try:
             signal.alarm(PDF_TIME_BUDGET_S)
             if ext == ".pdf":
-                ok = convert_pdf(path, budgets.get(path, 0))
+                ok = convert_pdf(path, budgets.get(path, 0), ocr=ocr, report=record,
+                                 ocr_workers=workers, deadline=time.monotonic() + PDF_TIME_BUDGET_S)
             elif ext == ".docx":
                 ok = convert_docx(path)
             elif ext == ".xlsx":
                 ok = convert_xlsx(path)
-            else:
-                continue
+            if ext != ".pdf":
+                record["status"] = "converted" if ok else "existing_or_empty"
             if ok:
                 converted += 1
-        except Exception as exc:  # noqa: BLE001 — one bad document must not fail the build
+        except Exception as exc:  # finish collecting diagnostics, then fail before publication
             failed += 1
+            record.update(status="failed", error={"type": type(exc).__name__, "message": str(exc)})
             for leftover in (path.with_name(path.name + ".d.tmp"),):
                 shutil.rmtree(leftover, ignore_errors=True)
             print(f"[convert_docs] FAILED {path.relative_to(SRC)}: {type(exc).__name__}: {exc}",
                   file=sys.stderr, flush=True)
         finally:
             signal.alarm(0)
-    print(f"[convert_docs] converted {converted} document(s)" + (f", {failed} failed" if failed else ""), flush=True)
-    return 0
+    return converted, failed
 
 
 if __name__ == "__main__":

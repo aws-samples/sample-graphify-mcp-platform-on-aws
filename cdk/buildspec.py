@@ -51,6 +51,10 @@ IGRAPH_VERSION = "1.0.0"
 # them from this prefix at run time.
 BUILD_SCRIPTS_PREFIX = "assets/build_scripts"
 
+# Both snapshot lanes archive src/ only; OCR cache/audit/report live outside it.
+# Raster images cannot be served by read_source and only inflate the archive.
+SOURCE_SNAPSHOT_TAR = "tar --exclude-vcs --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.webp' -czf /tmp/work/src.tar.gz ."
+
 
 def _fetch_script(filename: str, dest: str) -> str:
     return f'aws s3 cp "s3://$GRAPH_BUCKET/{BUILD_SCRIPTS_PREFIX}/{filename}" {dest} --only-show-errors'
@@ -98,6 +102,10 @@ BUILD_SPEC = {
             # botocore read timeout is raised for the longer generation.
             "GRAPHIFY_MAX_OUTPUT_TOKENS": "64000",
             "GRAPHIFY_API_TIMEOUT": "1500",
+            # Keep OCR diagnostics/cache outside the extraction and snapshot
+            # root. The helper uses GRAPH_BUCKET/REPO_ID for per-page S3 cache.
+            "DOCUMENT_OCR_CACHE_DIR": "/tmp/work/document-ocr-cache",
+            "DOCUMENT_OCR_AUDIT_PATH": "/tmp/work/document-ocr-audit.jsonl",
         }
     },
     "phases": {
@@ -261,7 +269,19 @@ BUILD_SPEC = {
                         'if [ "${SOURCE_TYPE:-git}" = "files" ]; then',
                         "set -e",
                         _fetch_script("convert_docs.py", "/tmp/convert_docs.py"),
+                        _fetch_script("document_ocr.py", "/tmp/document_ocr.py"),
+                        # Conversion failures must survive diagnostic uploads:
+                        # do not route incomplete OCR through graph fallbacks.
+                        "set +e",
                         "python /tmp/convert_docs.py",
+                        "CONVERT_RC=$?",
+                        "set -e",
+                        'printf %s "$CONVERT_RC" > /tmp/work/document-conversion.rc',
+                        'DOC_HISTORY="s3://$GRAPH_BUCKET/history/$REPO_ID/builds/${CODEBUILD_BUILD_ID##*:}"',
+                        "for f in document-conversion-report.json document-ocr-audit.jsonl; do",
+                        '  [ ! -f "/tmp/work/$f" ] || aws s3 cp "/tmp/work/$f" "$DOC_HISTORY/$f" --only-show-errors || echo "document diagnostic upload failed: $f"',
+                        "done",
+                        '[ "$CONVERT_RC" = 0 ] || exit "$CONVERT_RC"',
                         "fi",
                     ]
                 ),
@@ -378,6 +398,10 @@ BUILD_SPEC = {
         },
         "post_build": {
             "commands": [
+                # CodeBuild still enters post_build after a failed build phase.
+                # A missing result also blocks publication (e.g. helper fetch
+                # failed, or conversion was interrupted before recording RC).
+                'if [ "${SOURCE_TYPE:-git}" = "files" ]; then CONVERT_RC=$(cat /tmp/work/document-conversion.rc 2>/dev/null || echo 1); [ "$CONVERT_RC" = 0 ] || exit "$CONVERT_RC"; fi',
                 '[ -f /tmp/work/SKIP ] || test -s "$GRAPHIFY_OUT/graph.json"',
                 '[ "${SOURCE_TYPE:-git}" != "git" ] || python -c "import json;d=json.load(open(\'$GRAPHIFY_OUT/graph.json\'));assert d.get(\'built_at_commit\')==\'$TARGET_SHA\',\'built_at_commit mismatch\';print(\'nodes:\',len(d.get(\'nodes\',[])),\'edges:\',len(d.get(\'links\',[])))"',
                 # Non-git equivalent of the assertion: the graph must exist and
@@ -401,6 +425,23 @@ BUILD_SPEC = {
                         "else",
                         "(cd /tmp/work/src && graphify cluster-only . --no-label) || echo 'cluster-only failed (non-fatal)'",
                         "fi",
+                        "fi",
+                    ]
+                ),
+                # Files graphs cite converted/OCR markdown in the snapshot.
+                # Require its creation, size check and upload before publishing
+                # the graph. This orders this build's writes; runtime reads and
+                # concurrent builds can still observe different versions.
+                "\n".join(
+                    [
+                        'if [ "${SOURCE_TYPE:-git}" = "files" ] && [ ! -f /tmp/work/SKIP ]; then',
+                        "set -e",
+                        "cd /tmp/work/src",
+                        SOURCE_SNAPSHOT_TAR,
+                        'SZ=$(stat -c%s /tmp/work/src.tar.gz)',
+                        '[ "$SZ" -le 209715200 ] || { echo "src snapshot exceeds 200MB cap (${SZ} bytes)" >&2; exit 1; }',
+                        'aws s3 cp /tmp/work/src.tar.gz "s3://$GRAPH_BUCKET/repos/$REPO_ID/latest/src.tar.gz" --only-show-errors',
+                        'echo "src snapshot uploaded (${SZ} bytes)"',
                         "fi",
                     ]
                 ),
@@ -442,7 +483,7 @@ BUILD_SPEC = {
                         "fi",
                     ]
                 ),
-                # Source snapshot for the runtime's code-search tools
+                # Git/URL source snapshot for the runtime's code-search tools
                 # (search_code / read_source). Capped so a huge monorepo can't
                 # blow the runtime's /tmp; best-effort — without a snapshot the
                 # tools report "unavailable" instead of failing the build.
@@ -450,14 +491,11 @@ BUILD_SPEC = {
                 # per-repo prefixes, and the hub runtime doesn't sync them.
                 "\n".join(
                     [
-                        "if [ ! -f /tmp/work/SKIP ]; then",
+                        'if [ "${SOURCE_TYPE:-git}" != "files" ] && [ ! -f /tmp/work/SKIP ]; then',
                         "(",
                         "set -e",
                         "cd /tmp/work/src",
-                        # Raster images never serve search_code/read_source (binaries are
-                        # refused) — keep them out so an image-heavy LLM corpus does
-                        # not push the snapshot over the cap.
-                        "tar --exclude-vcs --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.gif' --exclude='*.webp' -czf /tmp/work/src.tar.gz .",
+                        SOURCE_SNAPSHOT_TAR,
                         'SZ=$(stat -c%s /tmp/work/src.tar.gz)',
                         'if [ "$SZ" -le 209715200 ]; then',
                         '  aws s3 cp /tmp/work/src.tar.gz "s3://$GRAPH_BUCKET/repos/$REPO_ID/latest/src.tar.gz" --only-show-errors',
@@ -469,22 +507,24 @@ BUILD_SPEC = {
                         "fi",
                     ]
                 ),
+                # Publish the report beside the snapshot, never inside src/.
+                '[ "${SOURCE_TYPE:-git}" != "files" ] || aws s3 cp /tmp/work/document-conversion-report.json "s3://$GRAPH_BUCKET/repos/$REPO_ID/latest/document-conversion-report.json" --only-show-errors',
                 # Publish the content hash LAST so it only ever describes a
                 # fully published graph; the completion Lambda reads it into
-                # last_built_sha for non-git sources. files: the pure manifest
-                # hash (MUST match the poller's files_manifest_hash). url: the
+                # last_built_sha for non-git sources. files: the manifest hash
+                # plus document/LLM versions (MUST match the poller). url: the
                 # skip fingerprint (content|graphifyy=..|prune=..) — the poller
                 # never string-compares it, only this build's skip check does.
                 "\n".join(
                     [
                         'if [ "${SOURCE_TYPE:-git}" != "git" ] && [ ! -f /tmp/work/SKIP ]; then',
                         "set -e",
-                        # files: the published hash carries the LLM knobs so a
-                        # settings change (images/model/on-off) is a "change" to
-                        # the poller — the field order matches url's `|llm=` last
+                        # files: doc=2 rebuilds existing corpora once for OCR.
+                        # LLM knobs make settings changes visible to the poller
+                        # too — the field order matches url's `|llm=` last
                         # so the fallback marker stays end-anchored. The poller's
                         # files branch appends the SAME suffix to its listing hash.
-                        'if [ "${SOURCE_TYPE:-git}" = "files" ]; then printf \'%s|img=%s|model=%s|llm=%s\' "$(cat /tmp/work/content_hash)" "${LLM_IMAGES:-0}" "${LLM_MODEL:-}" "${LLM_EXTRACT:-0}" > /tmp/work/source_fingerprint; fi',
+                        'if [ "${SOURCE_TYPE:-git}" = "files" ]; then printf \'%s|doc=2|img=%s|model=%s|llm=%s\' "$(cat /tmp/work/content_hash)" "${LLM_IMAGES:-0}" "${LLM_MODEL:-}" "${LLM_EXTRACT:-0}" > /tmp/work/source_fingerprint; fi',
                         "SRC_HASH_FILE=/tmp/work/content_hash",
                         'if [ "${SOURCE_TYPE:-git}" != "git" ]; then SRC_HASH_FILE=/tmp/work/source_fingerprint; fi',
                         'aws s3 cp "$SRC_HASH_FILE" "s3://$GRAPH_BUCKET/repos/$REPO_ID/latest/source_hash" --only-show-errors',

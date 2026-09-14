@@ -514,10 +514,10 @@
             </select></div>
           <div><label for="reg-llm-model-files"><span data-i18n="repo.llm.model">AI 모델</span><span class="tip" tabindex="0" data-i18n-tip="repo.llm.model.tip" data-tip="문서 추출과 연관 그룹 이름 붙이기에 쓰는 Bedrock Claude 모델입니다. 기본은 Sonnet 5. 품질·비용은 Haiku 4.5 < Sonnet 4.6 < Sonnet 5 < Opus 4.8 < Opus 5 순이며, 모델을 바꾸면 그 모델의 캐시를 새로 채워 첫 빌드는 전체 비용이 듭니다. 문서 AI 추출이 켜져 있을 때만 쓰입니다.">i</span></label>
             <select id="reg-llm-model-files" class="llm-model-select"></select></div>
-          <div><label for="reg-llm-images-files"><span data-i18n="repo.llm.images">이미지 AI 추출</span><span class="tip" tabindex="0" data-i18n-tip="repo.llm.images.tip" data-tip="png/jpg/gif/webp 이미지를 Claude 비전으로 읽어 노드로 만들고 참조하는 페이지와 연결합니다. 이미지당 약 1.6k 토큰, 5 MB 초과 이미지는 텍스트 참조로만 남고, 600장을 넘으면 텍스트만 추출합니다. PDF 안의 그림도 문서당 예산만큼(전체 300장) 큰 것부터 골라 뽑아 냅니다.">i</span></label>
+          <div><label for="reg-llm-images-files"><span data-i18n="repo.llm.images">PDF 본문·이미지 추출</span><span class="tip" tabindex="0" data-i18n-tip="repo.llm.images.tip" data-tip="문서 AI 추출이 켜져 있으면 텍스트가 부족한 PDF 페이지를 선택한 모델로 읽어 검색 가능한 본문으로 저장합니다. 표·숫자·절차는 원문과 대조가 필요합니다. 기본 새 페이지 한도는 빌드당 300쪽이며 캐시는 재사용합니다. 기존 이미지 분석과 PDF 내장 이미지 300개 선택 한도는 별도로 적용됩니다.">i</span></label>
             <select id="reg-llm-images-files">
               <option value="" data-i18n="repo.llm.images.off">끄기 (기본)</option>
-              <option value="1" data-i18n="repo.llm.images.on">켜기: 이미지를 비전으로 추출</option>
+              <option value="1" data-i18n="repo.llm.images.on">켜기: PDF 본문 OCR + 이미지 분석</option>
             </select></div>
           <div><label for="reg-name-files"><span data-i18n="repo.name">MCP 서버 이름 (선택)</span><span class="tip" tabindex="0" data-i18n-tip="repo.name.tip" data-tip="MCP 클라이언트에 추가할 때 쓰는 이름입니다. 비우면 소스로부터 자동 생성됩니다. 등록 후에도 변경할 수 있습니다.">i</span></label>
             <input id="reg-name-files" placeholder="graphify-mydocs"></div>
@@ -588,16 +588,16 @@
           </select></div>
         <div><label for="lp-model"><span data-i18n="repo.llm.model">AI 모델</span><span class="tip" tabindex="0" data-i18n-tip="repo.llm.model.tip" data-tip="문서 추출과 연관 그룹 이름 붙이기에 쓰는 Bedrock Claude 모델입니다. 기본은 Sonnet 5. 품질·비용은 Haiku 4.5 < Sonnet 4.6 < Sonnet 5 < Opus 4.8 < Opus 5 순이며, 모델을 바꾸면 그 모델의 캐시를 새로 채워 첫 빌드는 전체 비용이 듭니다. 문서 AI 추출이 켜져 있을 때만 쓰입니다.">i</span></label>
           <select id="lp-model" class="llm-model-select"></select></div>
-        <div><label for="lp-images" data-i18n="repo.llm.images">이미지 AI 추출</label>
+        <div><label for="lp-images" data-i18n="repo.llm.images">PDF 본문·이미지 추출</label>
           <select id="lp-images">
             <option value="" data-i18n="repo.llm.images.off">끄기 (기본)</option>
-            <option value="1" data-i18n="repo.llm.images.on">켜기: 이미지를 비전으로 추출</option>
+            <option value="1" data-i18n="repo.llm.images.on">켜기: PDF 본문 OCR + 이미지 분석</option>
           </select></div>
         <div><label for="lp-capmb"><span data-i18n="repo.llm.cap">코퍼스 상한 (MB)</span><span class="tip" tabindex="0" data-i18n-tip="repo.llm.cap.tip" data-tip="변환된 Markdown 합계가 이 크기를 넘으면 AI 추출을 건너뛰고 quick-scan으로 빌드합니다(비용 안전장치). 기본 64 MB ≈ 입력 1,600만 토큰, 최대 512.">i</span></label>
           <input id="lp-capmb" type="number" min="1" max="512" placeholder="64"></div>
         <div class="tail"><button class="mini" id="lp-save" data-i18n="lp.save">저장 후 재빌드</button></div>
       </div>
-      <p class="hint" data-i18n="lp.hint">저장하면 즉시 재빌드가 시작되고 문서(선택 시 이미지)가 Bedrock으로 전송됩니다. 변경된 문서만 다시 추출하며, 모델을 바꾸면 그 모델의 캐시를 새로 채우므로 첫 빌드는 전체 비용이 듭니다. 이미지 추출은 파일 소스에서만 켤 수 있습니다(크롤한 사이트는 이미지를 담지 않음).</p>
+      <p class="hint" data-i18n="lp.hint">저장하면 즉시 재빌드됩니다. 문서 AI 추출을 켜면 문서 내용이 Bedrock으로 전송됩니다. PDF 본문·이미지 옵션은 파일 소스의 읽기 어려운 페이지를 본문으로 저장하고 선택 이미지를 분석합니다. 캐시가 없는 페이지에는 추가 비용이 발생하며, OCR 실패·한도 초과는 빌드 실패로 기록됩니다.</p>
     </section>
     <section id="members-panel" hidden>
       <h2><span class="dot"></span>
@@ -958,11 +958,11 @@ const I18N = {
     "repo.llm.cap": "코퍼스 상한 (MB)",
     "repo.llm.cap.tip": "변환된 Markdown 합계가 이 크기를 넘으면 AI 추출을 건너뛰고 quick-scan으로 빌드합니다(비용 안전장치). 기본 64 MB ≈ 입력 1,600만 토큰, 최대 512.",
     "repo.llm.model.tip": "문서 추출과 연관 그룹 이름 붙이기에 쓰는 Bedrock Claude 모델입니다. 기본은 Sonnet 5. 품질·비용은 Haiku 4.5 < Sonnet 4.6 < Sonnet 5 < Opus 4.8 < Opus 5 순이며, 모델을 바꾸면 그 모델의 캐시를 새로 채워 첫 빌드는 전체 비용이 듭니다. 문서 AI 추출이 켜져 있을 때만 쓰입니다.",
-    "repo.llm.images": "이미지 AI 추출",
-    "repo.llm.images.off": "끄기 (기본)", "repo.llm.images.on": "켜기: 이미지를 비전으로 추출",
-    "repo.llm.images.tip": "png/jpg/gif/webp 이미지를 Claude 비전으로 읽어 노드로 만들고 참조하는 페이지와 연결합니다. 이미지당 약 1.6k 토큰, 5 MB 초과 이미지는 텍스트 참조로만 남고, 600장을 넘으면 텍스트만 추출합니다. PDF 안의 그림도 문서당 예산만큼(전체 300장) 큰 것부터 골라 뽑아 냅니다.",
+    "repo.llm.images": "PDF 본문·이미지 추출",
+    "repo.llm.images.off": "끄기 (기본)", "repo.llm.images.on": "켜기: PDF 본문 OCR + 이미지 분석",
+    "repo.llm.images.tip": "문서 AI 추출이 켜져 있으면 텍스트가 부족한 PDF 페이지를 선택한 모델로 읽어 검색 가능한 본문으로 저장합니다. 표·숫자·절차는 원문과 대조가 필요합니다. 기본 새 페이지 한도는 빌드당 300쪽이며 캐시는 재사용합니다. 기존 이미지 분석과 PDF 내장 이미지 300개 선택 한도는 별도로 적용됩니다.",
     "lp.title": "AI 추출 설정", "lp.save": "저장 후 재빌드",
-    "lp.hint": "저장하면 즉시 재빌드가 시작되고 문서(선택 시 이미지)가 Bedrock으로 전송됩니다. 변경된 문서만 다시 추출하며, 모델을 바꾸면 그 모델의 캐시를 새로 채우므로 첫 빌드는 전체 비용이 듭니다. 이미지 추출은 파일 소스에서만 켤 수 있습니다(크롤한 사이트는 이미지를 담지 않음).",
+    "lp.hint": "저장하면 즉시 재빌드됩니다. 문서 AI 추출을 켜면 문서 내용이 Bedrock으로 전송됩니다. PDF 본문·이미지 옵션은 파일 소스의 읽기 어려운 페이지를 본문으로 저장하고 선택 이미지를 분석합니다. 캐시가 없는 페이지에는 추가 비용이 발생하며, OCR 실패·한도 초과는 빌드 실패로 기록됩니다.",
     "lp.saved": "AI 추출 설정을 저장했습니다. 재빌드를 시작합니다", "lp.saved.norebuild": "AI 추출 설정을 저장했습니다 (재빌드 없음)",
     "lp.saved.inflight": "AI 추출 설정을 저장했습니다. 진행 중인 빌드가 끝나면 폴러가 새 설정으로 다시 빌드합니다", "lp.nochange": "변경된 설정이 없습니다",
     "repo.status.toolarge.tip": "그래프(graph.json)가 서빙 상한 512 MiB를 넘어 MCP 서버가 그래프를 읽지 못합니다. 도구 호출이 실패하고 허브에서도 제외됩니다. prune 경로로 그래프를 줄이거나 소스를 나눠 등록하세요.",
@@ -1130,11 +1130,11 @@ const I18N = {
     "repo.llm.cap": "Corpus cap (MB)",
     "repo.llm.cap.tip": "When the converted Markdown exceeds this size the build skips AI extraction and uses the quick-scan (a cost guard). Default 64 MB ≈ 16M input tokens, max 512.",
     "repo.llm.model.tip": "The Bedrock Claude model used to extract documents and name communities. Sonnet 5 is the default; quality and cost rise from Haiku 4.5 < Sonnet 4.6 < Sonnet 5 < Opus 4.8 < Opus 5. Switching fills a fresh cache for that model, so its first build pays the full cost. Only used while AI extraction is on.",
-    "repo.llm.images": "Image AI extraction",
-    "repo.llm.images.off": "Off (default)", "repo.llm.images.on": "On: extract images with vision",
-    "repo.llm.images.tip": "Read png/jpg/gif/webp images with Claude vision, mint a node per image and link it to the pages that reference it. About 1.6k tokens per image; images over 5 MB stay text references, and above 600 images the build extracts text only. Figures embedded in PDFs are pulled out too (largest first, 300 across the corpus, shared by page count).",
+    "repo.llm.images": "PDF body and image extraction",
+    "repo.llm.images.off": "Off (default)", "repo.llm.images.on": "On: PDF body OCR + image analysis",
+    "repo.llm.images.tip": "With document AI extraction enabled, read text-poor PDF pages using the selected model and save searchable body text. Verify tables, numbers and steps against the original. The default limit is 300 new pages per build; cached pages are reused. Existing image analysis and the separate 300 embedded-image selection limit still apply.",
     "lp.title": "AI extraction settings", "lp.save": "Save and rebuild",
-    "lp.hint": "Saving starts a rebuild right away and sends the documents (and images, if enabled) to Bedrock. Only changed documents re-extract; switching the model fills a fresh cache for that model, so its first build pays the full cost. Image extraction is available for file sources only (crawled sites carry no images).",
+    "lp.hint": "Saving starts a rebuild. Document AI extraction sends document content to Bedrock. For file sources, the PDF body and image option transcribes text-poor pages and analyzes selected images. Uncached pages incur additional usage; OCR failures and exceeded limits fail the build.",
     "lp.saved": "AI extraction settings saved, rebuilding", "lp.saved.norebuild": "AI extraction settings saved (no rebuild needed)",
     "lp.saved.inflight": "AI extraction settings saved; the poller rebuilds with them once the in-flight build finishes", "lp.nochange": "Nothing changed",
     "repo.status.toolarge.tip": "graph.json exceeds the 512 MiB serving cap, so the MCP server cannot load it: tool calls fail and the source is left out of the hub. Shrink the graph with prune paths or split the source.",
