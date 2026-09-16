@@ -589,7 +589,7 @@
       </div>
       <p class="hint" id="reg-hint-git" data-i18n="repo.reghint">퍼블릭 레포는 플랫폼 전체에서 공유(풀링)됩니다. 이미 등록된 레포라면 빌드 없이 즉시 참여합니다.</p>
       <p class="hint" id="reg-hint-url" hidden data-i18n="repo.reghint.url">등록한 URL과 같은 호스트/경로 범위만 크롤합니다 (sitemap 우선, robots.txt 존중, 페이지 수 제한). 등록하면 바로 첫 크롤과 빌드가 시작되고, 이후에는 주기적으로 재크롤해 내용이 바뀐 경우에만 다시 빌드합니다.</p>
-      <p class="hint" id="reg-hint-files" hidden data-i18n="repo.reghint.files">내 계정 전용(프라이빗) S3 업로드 공간이 만들어집니다. 등록 후 안내되는 명령으로 폴더를 동기화하면 첫 빌드가 시작되고, 이후 변경도 자동으로 감지해 다시 빌드합니다. 마크다운 문서와 코드 파일을 지원합니다.</p>
+      <p class="hint" id="reg-hint-files" hidden data-i18n="repo.reghint.files">선택한 공개 범위로 파일 소스를 등록합니다. 등록 후 브라우저에서 업로드하거나 안내된 S3 동기화 명령을 사용하세요. Markdown, 코드, PDF, DOCX, XLSX를 지원합니다. 텍스트가 적은 PDF의 본문 OCR을 사용하려면 “문서 AI 추출”과 “PDF 본문과 이미지 추출”을 모두 켜세요.</p>
     </section>
     <section id="registration-result-panel" hidden>
       <h2 data-i18n="ux.registrationResultTitle">소스 등록 완료</h2>
@@ -1003,7 +1003,7 @@ const I18N = {
     "repo.url.iv.1h": "1시간", "repo.url.iv.6h": "6시간", "repo.url.iv.1d": "1일", "repo.url.iv.1w": "1주",
     "repo.reghint.url": "등록한 URL과 같은 호스트/경로 범위만 크롤합니다 (sitemap 우선, robots.txt 존중, 페이지 수 제한). 등록하면 바로 첫 크롤과 빌드가 시작되고, 이후에는 주기적으로 재크롤해 내용이 바뀐 경우에만 다시 빌드합니다.",
     "repo.files.name": "폴더 이름 (영소문자, 숫자, -, _, 1-40자)",
-    "repo.reghint.files": "내 계정 전용(프라이빗) S3 업로드 공간이 만들어집니다. 브라우저에서 직접 업로드하거나 안내되는 명령으로 폴더를 동기화하면 빌드가 시작되고, 이후 변경도 자동으로 감지해 다시 빌드합니다. 마크다운, 코드 파일과 PDF/Word/Excel 문서를 지원합니다 (PDF는 텍스트를 추출해 변환, 스캔 이미지 PDF 제외).",
+    "repo.reghint.files": "선택한 공개 범위로 파일 소스를 등록합니다. 등록 후 브라우저에서 업로드하거나 안내된 S3 동기화 명령을 사용하세요. Markdown, 코드, PDF, DOCX, XLSX를 지원합니다. 텍스트가 적은 PDF의 본문 OCR을 사용하려면 “문서 AI 추출”과 “PDF 본문과 이미지 추출”을 모두 켜세요.",
     "repo.uploadinfo": "업로드 위치 & 동기화 명령",
     "repo.uploadhint": "브라우저에서 직접 업로드하거나, AWS CLI 자격 증명이 있는 터미널에서 위 명령을 실행하세요. CLI 동기화는 폴링 주기(기본 15분) 안에 빌드로 반영됩니다. API 키가 든 .mcp.json이나 .env 같은 시크릿 파일은 절대 올리지 마세요.",
     "repo.copysync": "동기화 명령 복사",
@@ -1222,7 +1222,7 @@ const I18N = {
     "repo.url.iv.1h": "1 hour", "repo.url.iv.6h": "6 hours", "repo.url.iv.1d": "1 day", "repo.url.iv.1w": "1 week",
     "repo.reghint.url": "Crawls only within the registered URL's host + path prefix (sitemap first, robots.txt honored, page cap applied). The first crawl & build start right away; later re-crawls rebuild only when the content actually changed.",
     "repo.files.name": "Folder name (a-z, 0-9, -, _; 1-40 chars)",
-    "repo.reghint.files": "Creates a PRIVATE per-account S3 upload space. Upload straight from the browser or sync a folder with the command shown after registration; later changes are detected and rebuilt automatically. Markdown, code files, and PDF/Word/Excel documents are supported (PDFs are text-extracted; image-only scans are not).",
+    "repo.reghint.files": "Register a file source with the selected visibility. After registration, upload in the browser or use the provided S3 sync command. Markdown, code, PDF, DOCX, and XLSX are supported. For text-poor PDF body OCR, turn on both “AI extraction” and “PDF body and image extraction”.",
     "repo.uploadinfo": "Upload location & sync command",
     "repo.uploadhint": "Upload straight from the browser, or run the command above in a terminal with AWS CLI credentials. CLI syncs are picked up within the poll interval (default 15 min). Never upload secret-bearing files like .mcp.json (holds an API key) or .env.",
     "repo.copysync": "Copy sync command",

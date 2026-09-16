@@ -1,339 +1,482 @@
 # Graphify MCP Platform on AWS
 
-[**한국어 README**](README.ko.md) · [Engineering reference](docs/reference.md) · [Document sources ops](docs/document-sources-ops.md)
+[한국어](README.ko.md) | [Source groups](docs/source-groups.md) | [Build diagnostics](docs/build-diagnostics.md) | [Engineering reference](docs/reference.md)
 
-Turn any git repository, documentation site, or folder of files into a **knowledge-graph MCP server** that AI coding agents (Claude Code, Cursor, Kiro, Amazon Q Developer, …) can query — self-serve, multi-tenant, protected by API keys, and kept up to date automatically.
+Host code and document knowledge graphs as remote MCP servers on AWS. Register sources in a web console, connect related sources into a project graph, and let AI assistants follow relationships and read the supporting source text.
 
-The sample wraps the open-source [graphify](https://github.com/Graphify-Labs/graphify) engine (AST + community detection → `graph.json`) in a fully AWS-native platform:
+The platform uses [graphify](https://github.com/Graphify-Labs/graphify) to build graphs. It adds source management, access control, versioned source groups, build diagnostics, a graph explorer, and a Claude Playground on Amazon Bedrock.
 
+For example, a project can have separate sources for its frontend, backend, requirements, and QA documents. A source group lets you trace an API or requirement across those sources, inspect the recorded evidence, and give an AI coding assistant the same MCP endpoint.
 
-| Plane                    | What it does                                                                                                                                                         | Built on                                                    |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Build**                | Detects changes (polling, webhooks, S3 uploads, site re-crawls), rebuilds the graph incrementally at a pinned commit, publishes graph + viz bundle + source snapshot | EventBridge, Lambda, CodeBuild (ARM64), S3                  |
-| **Query**                | One always-warm MCP server per source plus a **hub** that serves the merged graph of every public source; graphs hot-reload into live sessions without a redeploy    | ECS Fargate (Graviton), Cloud Map, VPC                      |
-| **Data**                 | `POST /v1/mcp/{serverId}` with an `X-Graphify-Key` header — no AWS credentials or SigV4 on the client side; per-key scope, throttling, quota and metering            | API Gateway REST, Lambda authorizer, Lambda proxy, DynamoDB |
-| **Management + console** | Invite-only web console: register sources, browse the public catalog, issue/revoke keys, explore graphs visually, test with Claude, administer users                 | CloudFront, S3, Cognito, API Gateway HTTP API, Lambda       |
-| **Playground**           | Chat with Claude on **Amazon Bedrock** while it calls the MCP tools of a server your account may reach; streaming, Markdown, direct tool calls                       | Lambda (buffered + response streaming), Bedrock             |
+![Group graph showing a backend function and its connected frontend, planning, and QA sources](docs/screenshots/guide-graph.en.png)
 
+This repository is an AWS sample. The guide covers deployment and day-to-day operation; review the [production deployment considerations](#production-deployment-considerations) before onboarding users or sensitive sources.
 
-> **Who is this for?** Solutions Architects and platform teams who want a reference implementation of *hosting remote MCP servers on AWS* — tenancy, key-based auth, warm compute, change-driven rebuilds, and a Bedrock-backed test harness — with graphify as a concrete, useful workload. Everything here is sample code: read [Security considerations](#security-considerations) before running it for real users.
+## Start here
 
----
+| Your task | Where to start |
+| --- | --- |
+| Deploy a platform | [Deploy to AWS](#deploy-to-aws) |
+| Add code or documents | [Register your first source](#register-your-first-source) |
+| Connect repositories and project documents | [Create a source group](#create-a-source-group) |
+| Configure an AI coding assistant | [Connect an MCP client](#connect-an-mcp-client) |
+| Investigate a failed build | [Diagnose a failed build](#diagnose-a-failed-build) |
+| Estimate spend or maintain a deployment | [Cost planning](#cost-planning) and [Operations](#operations) |
 
-## Table of contents
+Screenshots use the current console with demo data and replayed API responses. They illustrate the interface, not benchmark results. Endpoints and identities are examples. See [screenshot details and reproduction](docs/screenshots/README.md).
 
-1. [Architecture](#architecture)
-2. [Features and console tour](#features-and-console-tour)
-3. [Prerequisites](#prerequisites)
-4. [Deploy](#deploy)
-5. [Connect an MCP client](#connect-an-mcp-client)
-6. [Configuration](#configuration)
-7. [Cost](#cost)
-8. [Limits and quotas](#limits-and-quotas)
-9. [Security considerations](#security-considerations)
-10. [Operations](#operations)
-11. [Repository layout](#repository-layout)
-12. [Clean up](#clean-up)
+## Sources, groups, and the public hub
 
----
+| Concept | Contents | Access and serving |
+| --- | --- | --- |
+| **Source** | One Git repository, documentation site, or uploaded folder | Public or private. Ordinary sources have a dedicated Fargate MCP service. |
+| **Source group** | Up to eight existing sources, their pinned versions, and recorded cross-source relations | Private. Each reader needs group access and access to every member source. Queries run on demand in Lambda. |
+| **Public hub** (`all`) | Merged graphs from public sources | Available to signed-in platform members and appropriately scoped API keys. Private sources and private groups are excluded. |
 
-## Architecture
+Here, **public** means shared within the platform. It does not mean anonymous internet access. Registering an existing public source subscribes to the shared source instead of creating another copy.
 
-![Platform architecture](docs/architecture.en.png)
+A graph link records a relationship. It does not by itself prove that an implementation satisfies a requirement or that a test covers it. Use the linked source text to check the conclusion.
 
-*(Interactive version: [`docs/architecture.en.html`](docs/architecture.en.html); Korean: [`docs/architecture.ko.png`](docs/architecture.ko.png))*
+## Deploy to AWS
 
-### Request flows
+### Prerequisites
 
-**Build (change → graph).** EventBridge fires the poller Lambda every 5 minutes. For each due source it compares the current head (GitHub commits API with ETag, or the git smart-HTTP ref advertisement for any other host, or the S3 listing hash for file folders, or the crawl schedule for docs sites) with the last built revision. On change it claims the build with a conditional DynamoDB update and starts a CodeBuild job that fetches the exact commit (or the uploaded folder / crawled pages), converts PDF, Word and Excel files to Markdown (`convert_docs.py`; PDFs become section-aligned parts), runs `graphify extract` incrementally — or, when AI extraction is on, a Bedrock Claude semantic pass over the documents and their images — generates community labels and the explorer's layout bundle (`make_viz.py`), and publishes to `s3://<bucket>/repos/<repo_id>/latest/`. A completion Lambda records the result; the merged hub graph (`repos/__all__`) is refreshed on every build.
+- An AWS account and a deployment role allowed to create the resources in the [architecture](#architecture), including IAM roles.
+- AWS CLI v2 with working credentials for the target account.
+- Python 3.12 or later and [uv](https://docs.astral.sh/uv/).
+- Node.js 22 or later, following the [AWS CDK prerequisites](https://docs.aws.amazon.com/cdk/v2/guide/prerequisites.html).
+- A running Docker engine that can build `linux/arm64` images. On an x86 host, configure ARM emulation.
+- Access to the selected Amazon Bedrock models if you will use document AI extraction, PDF OCR, AI relation assessment, or Playground chat. Model availability and invocation permissions depend on the account and region.
 
-**Serve (S3 → live MCP).** Each Fargate task runs `runtime/entrypoint.py`: a sync thread watches the S3 ETag and atomically swaps `graph.json` with `os.replace()`; graphify reloads the graph on the next tool call, so updates propagate into live sessions within about three minutes. The task also unpacks a source snapshot so two platform tools — `search_code` and `read_source` — can ground graph answers in real code. Tasks live in a VPC and accept traffic **only** from the proxy Lambda's security group.
-
-**Query (client → tool result).** An MCP client calls `POST /v1/mcp/{serverId}` with `X-Graphify-Key`. The REQUEST authorizer (TTL 0, so revocation is immediate) hashes the key, loads its scope from DynamoDB and returns a scoped IAM policy plus the API Gateway usage-plan identifier; the in-VPC proxy Lambda resolves the target task through Cloud Map DNS, forwards the JSON-RPC body to `:8000/mcp`, re-checks scope in code and increments per-key/per-server usage counters.
-
-**Console.** The SPA (S3 + CloudFront) signs users in with Cognito managed login (PKCE) and calls the HTTP API with a JWT. Graph explorer bundles are served through short-lived presigned S3 URLs; the Playground calls Bedrock from Lambda and runs MCP tools through the in-VPC proxy under the signed-in user's own access (hub for everyone, other servers only with a grant) — no API key involved.
-
-### Tenancy model
-
-- **Public sources are pooled** — one build, one graph, one Fargate service shared by every member; a second registration just subscribes (reference-counted; torn down at zero).
-- **Private sources are siloed** — the `repo_id` carries an owner suffix, the graph is kept out of the hub, and only the owner's grants/keys can reach the server. Private git repos use a PAT stored in Secrets Manager and resolved inside CodeBuild only.
-- **API keys** are scoped to *all servers* or to an explicit list; the hub (`all`) only ever contains public graphs.
-
----
-
-## Features and console tour
-
-### Home — a role-aware dashboard
-
-Your usage this month (per day and per server), the MCP servers you provide and the ones you subscribe to, an adaptive get-started checklist, and alerts for failed builds or expiring keys. Admins also get a platform-status panel (users, public sources, subscriptions, failed builds).
-
-![Home](docs/screenshots/overview.en.png)
-
-### Sources — register, subscribe, and the public catalog
-
-Register a **git repository** (any smart-HTTP host: GitHub, GitLab, Bitbucket, Gitea, GitHub Enterprise…), a **docs-site URL** (sitemap-first crawler, robots.txt honored), or a **file folder** (an S3 upload prefix you `aws s3 sync` into; PDF/Word/Excel are converted to Markdown at build time). Choose public (pooled, hub-merged) or private (siloed). The **public server catalog** shows every public source on the platform with its type, owner, build status and subscriber count — subscribe with one click. Each source row carries its build settings: rebuild, rename, members (private), crawl settings (docs sites), file management (file folders), and **AI extraction settings** for the Bedrock model, embedded-image extraction and corpus cap. Registration, settings, member/file management, key issuance and invitations open in shared task modals, keeping pages focused on their lists. Every table in the console is paginated.
-
-**Build details / logs** opens the latest build's phases, failure messages and CloudWatch logs inside the console. Review suggested checks, open the source's file or AI extraction settings, then rebuild. Logs load on demand with earlier-page navigation; missing logs and read-permission failures are shown explicitly. See [build diagnostics](docs/build-diagnostics.md).
-
-![Sources](docs/screenshots/repos.en.png)
-
-### Source groups — connect code and project documents
-
-Group frontend/backend repositories with planning and QA sources. Add source
-roles and descriptions, build cross-source relations, then inspect both source
-quotes or query the group through MCP. Explicit references are available
-without another model call; optional Claude analysis labels inferred relations
-and reports token usage. Groups use on-demand Lambda queries, with no
-per-group Fargate service. See [source groups](docs/source-groups.md) for access,
-versioning, limits and cost controls.
-
-### MCP servers — per-source endpoints ready to paste
-
-Every subscribed source gets a dedicated MCP URL; `graphify-all` is the hub. Each card is titled by its MCP server name (the name `claude mcp add` registers) and shows two status pills — the query **runtime** (the Fargate service) and the latest **build** — with hover explanations. Copy the URL, a ready-made `claude mcp add` command, or the `.mcp.json` block, or rename the server in place.
-
-![MCP servers](docs/screenshots/servers.en.png)
-
-### Graph explorer — understand a codebase visually
-
-Nothing is laid out in the browser: every build precomputes a two-level layout (community meta-graph → members inside discs) and publishes a compact columnar bundle (~30× smaller than `graph.json`). Drill from **folders/repos → communities → nodes**, color by folder/type/community/repo, filter by node and edge type, search, find shortest paths, inspect a node's neighbors grouped by relation, read the **source code around the node inline**, copy a Markdown context block, or hand the node to the Playground. The hub view shows how repositories relate to each other.
-
-![Graph explorer — hub](docs/screenshots/graph-hub.en.png)
-
-![Graph explorer — folder view of this repository](docs/screenshots/graph-folders.en.png)
-
-![Graph explorer — node inspector with source viewer](docs/screenshots/graph-explorer.en.png)
-
-### API keys — issue, scope, revoke
-
-Keys are shown once, scoped to all servers or one server, expire after a configurable number of days and can be revoked instantly (the authorizer caches nothing).
-
-![API keys](docs/screenshots/keys-issued.en.png)
-
-
-
-![API keys list](docs/screenshots/keys.en.png)
-
-### Playground — test MCP with Claude on Amazon Bedrock
-
-Pick one of the servers your account can reach (the hub, plus sources you own, subscribe to or were invited to), load its tools and chat — no API key to paste. Claude (Sonnet 4.6 / Opus 4.6–4.8 via global cross-region inference profiles) calls the graph tools in an agentic loop that is **client-driven** — one model call per HTTP request — so no request outlives the platform limits. Output streams token-by-token over a Lambda Function URL; a direct tool-call panel lets you invoke a single tool with JSON arguments for protocol-level debugging.
-
-![Playground](docs/screenshots/playground.en.png)
-
-### Admin — invite-only user management
-
-Admins invite users (temporary password by email), reset passwords and delete accounts (which also revokes the user's keys and cleans up their private sources).
-
-![Admin](docs/screenshots/admin.en.png)
-
-### MCP tools exposed to clients
-
-
-| Tool                                                                                                     | Source        | What it does                                                                                                        |
-| -------------------------------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path` | graphify      | Keyword-seeded graph traversal, node/edge lookups, community summaries, hub nodes, statistics, path finding         |
-| `search_code`                                                                                            | this platform | Full-text search over the source snapshot (literal or regex; per-repo servers only)                                 |
-| `read_source`                                                                                            | this platform | Read a numbered line range of a file, grounded by a node's `source_file`/`source_location`                          |
-| `list_prs`, `get_pr_impact`, `triage_prs`                                                                | graphify      | Listed for completeness; they need the `gh` CLI and a checkout, so they return tool-level errors in this deployment |
-
-Newly built images make `get_node` prefer an exact case-insensitive ID, then a unique exact label. Ambiguous labels retain the existing fallback; use an explicit node ID to select one. The version/SHA-guarded build patch is documented in [the engineering reference](docs/reference.md#exact-node-lookup). `read_source` line numbers refer to the published text file; an original Excel cell range is a different coordinate system.
-
----
-
-## Prerequisites
-
-- An AWS account with administrator-level credentials and the [CDK bootstrapped](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping.html) in the target region (default `ap-northeast-2`).
-- **Amazon Bedrock model access** enabled for Anthropic Claude models in that account (the Playground uses `global.*` cross-region inference profiles). The rest of the platform works without it.
-- Local tooling: Python ≥ 3.12 with [`uv`](https://docs.astral.sh/uv/), Node.js 20+ (runs the CDK CLI via `npx`), and **Docker** (the deploy builds and pushes a `linux/arm64` image — on an x86 host Docker Desktop's QEMU emulation is used automatically).
-- Optional but recommended: a GitHub personal access token in Secrets Manager for polling (see [Configuration](#configuration)); unauthenticated GitHub API calls share a 60 requests/hour budget per egress IP.
-
-## Deploy
+### 1. Prepare the checkout and deployment environment
 
 ```bash
-git clone https://github.com/aws-samples/aws-graphify-mcp-platform.git
-cd aws-graphify-mcp-platform
-uv sync                                          # Python deps for the CDK app and scripts
-(cd lambdas/playground_stream && npm ci)         # Node deps for the streaming Lambda (shipped in the asset)
+git clone https://github.com/aws-samples/sample-graphify-mcp-platform-on-aws.git
+cd sample-graphify-mcp-platform-on-aws
 
-npx -y aws-cdk@2.1139.0 bootstrap                  # once per account/region
-npx -y aws-cdk@2.1139.0 deploy                     # ~10 min; builds + pushes the query-plane image
+uv sync
+npm ci --prefix lambdas/playground_stream
+
+export AWS_REGION=ap-northeast-2
+export AWS_DEFAULT_REGION="$AWS_REGION"
+export GRAPHIFY_STACK_NAME=GraphifyMcpPlatform
+
+aws sts get-caller-identity
 ```
 
-The stack (`GraphifyMcpPlatform` by default; override with `-c stack_name=...` or `GRAPHIFY_STACK_NAME`, which the operator scripts read too) prints its outputs — keep `ConsoleUrl`, `McpDataApiUrl` and `PlatformApiUrl` handy.
+Check the account returned by the last command. If you use a named AWS profile, set `AWS_PROFILE` before running these commands.
 
-Create the first administrator and sign in:
+For an existing deployment, use its original region and stack name. A different stack name creates a separate stack; it does not upgrade the original deployment.
+
+### 2. Bootstrap and deploy
 
 ```bash
-uv run python scripts/create_platform_user.py --email you@example.com --admin
-# prints a permanent password and the console URL (no email is sent)
+# Bootstrap the target account and region once.
+npx -y aws-cdk@2.1139.0 bootstrap
+
+# Build the ARM runtime image and deploy the stack.
+npx -y aws-cdk@2.1139.0 deploy
 ```
 
-The user pool is invite-only, so this first account has to come from operator credentials; every later user is invited from the console's Admin tab and receives a temporary password by email. Re-running the script for an existing email resets that user's password, which is also the recovery path for a locked-out admin.
+The stack outputs include:
 
-Everything else can be done in the console: register a source (a public GitHub repo such as `https://github.com/psf/requests` takes 1–2 minutes to build), watch it reach **READY**, issue an API key, and connect a client. The same flow is scriptable:
+| Output | Use |
+| --- | --- |
+| `ConsoleUrl` | Open the web console. |
+| `McpDataApiUrl` | Base URL for API-key-authenticated MCP requests. |
+| `PlatformApiUrl` | Management API used by the console. |
+
+Deployment time depends on Docker image builds and AWS resource provisioning. Keep the same `GRAPHIFY_STACK_NAME` environment variable for the operator scripts below.
+
+### 3. Create the first administrator
 
 ```bash
-uv run python scripts/register_repo.py --url https://github.com/psf/requests   # public repo, default branch auto-resolved
-GRAPHIFY_API_KEY=gfy_live_... uv run python scripts/smoke_test.py --repo-id github__psf__requests__main --node Session
-uv run python scripts/print_mcp_config.py                                     # emits the .mcp.json block
+uv run python scripts/create_platform_user.py --region "$AWS_REGION" --email admin@example.com --admin
 ```
+
+Run this in a private terminal. The script prints a permanent password and the console URL; it does not send an email. Open the console and sign in with that account.
+
+The user pool has no self-registration. Administrators invite subsequent users from **Admin**. Running the bootstrap script again for an existing email resets that account's password. Operator scripts default independently to Seoul, so pass `--region` when using another region.
+
+The **Admin** page also supports password resets and account removal. Removing a user revokes their keys, removes source grants, and tears down private sources they own. Check shared work and group dependencies before removing an account.
+
+### 4. Check the first deployment
+
+Before adding a large corpus:
+
+1. Sign in and confirm that the main pages load.
+2. Register a small source and wait for its build to finish.
+3. Open its graph and check a node against its source text.
+4. Open **Playground**, choose the source, load its tools, and call `graph_stats` with `{}`.
+5. Issue a source-scoped API key and connect a client using the instructions below.
+
+## Register your first source
+
+Open **Sources**, then **Register source**. Registration and management tasks open in modals, while the page remains focused on its source lists.
+
+![Source lists showing a source group and individual sources](docs/screenshots/guide-sources.en.png)
+
+### Choose the source type
+
+| Type | What to provide | How it updates |
+| --- | --- | --- |
+| **Git repository** | HTTPS Git URL, optional branch/ref, and a PAT for a private repository | Polling detects changes. GitHub repositories you control can use webhooks. |
+| **Documentation site URL** | HTTPS URL with the host and path prefix you want to crawl | Scheduled crawls respect `robots.txt` and stay within that scope. |
+| **File folder** | A folder name, then code, Markdown, PDF, DOCX, or XLSX uploads | The platform detects changes in the upload prefix and rebuilds. |
+
+Give the source a short description of what it owns. For example: “Backend routes, account validation, and fund-change rules.” Use private visibility for material that should not enter the public hub. A PAT-backed registration is private.
+
+For a file source, finish registration before uploading. The result modal offers browser upload and an S3 sync command. Browser uploads use the console's authenticated flow; the S3 sync command requires AWS credentials. Empty folders do not produce a useful graph.
+
+Upload only source material you intend to make searchable. Keep `.env`, `.mcp.json`, credentials, and private keys out of the upload folder and repository snapshot.
+
+### Choose document extraction settings
+
+![File registration modal with document AI and PDF extraction settings](docs/screenshots/guide-register.en.png)
+
+| Setting | What it changes | When to use it |
+| --- | --- | --- |
+| **Document AI extraction** | Uses Bedrock to extract concepts and relationships from document content. The default is quick-scan extraction. | Documents need semantic relationships beyond their headings and structure. |
+| **PDF body and image extraction** | With document AI extraction enabled, transcribes text-poor PDF pages into searchable Markdown and enables image analysis. | Scanned pages, sparse native PDF text, or relevant figures. |
+| **AI relation assessment** in a source group | Assesses candidate relationships between already built sources. It is off by default. | You want model-inferred cross-source relations in addition to explicit references. |
+
+These are separate settings. Turning on group AI assessment does not enable OCR or improve an incomplete source conversion.
+
+Document extraction defaults to Claude Sonnet 5 in this release. The console gets its extraction model list from the API. The Playground has a separate model allow-list, so the two pickers may differ. Use a model your account can invoke.
+
+For PDFs, body recovery currently targets pages with fewer than 50 native alphanumeric characters, including Unicode letters. It is not a guarantee that every table cell or diagram on a text-rich page was captured. Check important amounts, tables, and procedures against the original document. The conversion report records partial and unsupported inputs, including password-protected PDFs that cannot be opened.
+
+Converted documents are searched as text. A Markdown line number is not the same as an original PDF page number or Excel cell address. See [PDF body recovery and conversion reports](docs/document-sources-ops.md#pdf-body-recovery-when-image-extraction-is-enabled) for the processing and failure rules.
+
+### Confirm the source is usable
+
+After a successful build, open the graph and inspect a known symbol or document term. Read the published source text around it. A `READY` status confirms publication, not complete extraction or answer accuracy.
+
+For an ordinary source MCP endpoint, also check its runtime status in **MCP Servers**. Source build state and runtime state are different. An operator can register a source with `scripts/register_repo.py --no-runtime` for use through groups without creating a dedicated Fargate service. This option does not create the group or disable source builds; it is not a console registration setting.
+
+## Create a source group
+
+Use a group when one task spans several sources. Keep each source independently maintainable and describe its role in the project.
+
+| Example source | Group role | Useful description |
+| --- | --- | --- |
+| Frontend code | `frontend` | Screens, client-side validation, and calls to the account API. |
+| Backend code | `backend` | API routes, service logic, and validation rules. |
+| Requirements and design documents | `planning` | Requirement IDs, expected behavior, and API contracts. |
+| Test plans and acceptance cases | `qa` | Test-case IDs, preconditions, and expected outcomes. |
+
+1. Build each source successfully. Older sources without immutable version artifacts must be rebuilt once.
+2. Open **Source groups**, then **Create group**.
+3. Enter a group name and description. Select one to eight sources, assign their roles, and add group-specific descriptions.
+4. Save the group, then choose **Build relations**. Start with AI assessment off if explicit references are sufficient.
+5. Inspect the resulting relations and both source quotations. A shared requirement ID is a traceable reference, not a coverage verdict.
+6. Open **View full graph** or **Connection guide** to use the group visually or through MCP.
+
+![Source group details and relationships between its member sources](docs/screenshots/guide-groups.en.png)
+
+Groups also appear in **Sources** under their own section. Owners can edit and delete groups; editors can edit; viewers have read-only access. Deleting a group preserves its original sources.
+
+**Group access does not grant source access.** Every member must retain access to every source in the group. Adding a source can make the group unavailable to members who lack that source's permission. Restore access or remove the source from the group, then rebuild as needed.
+
+Source versions and descriptions are checked on a five-minute reconciliation schedule for existing built groups. Changed inputs can trigger a rebuild. Failed attempts require explicit retry instead of an unlimited retry loop. See [source group behavior, limits, and access rules](docs/source-groups.md).
+
+## Explore the graph and verify the source
+
+The **Graph** page has source/folder, community, and full-node views. Use search and filters to narrow the graph, then select a node to inspect its relationships and source text.
+
+For source groups:
+
+- A selected or hovered node shows its source name on the canvas.
+- The inspector starts with the **Origin source** and **Connected sources** cards.
+- Each card counts distinct neighboring nodes and individual edges, with incoming and outgoing directions.
+- Neighbor rows carry source badges, which help distinguish identically named nodes.
+- Cross-source edges use the starting source's color. Same-source edges are gray. Inferred edges are thinner and lighter; selection and path highlighting take priority.
+
+The connected-source summary uses the full loaded graph, including nodes and edges hidden by the current filters. It counts direct connections, not every source reachable through several hops.
+
+Source reads in a group use the version pinned to that graph. If versions or permissions no longer match, refresh or rebuild; the viewer does not silently substitute newer source text. Auto-loading source text scrolls only its code box, keeping the node's source summary in place.
 
 ## Connect an MCP client
 
-```bash
-# Claude Code — the hub searches every public source at once
-claude mcp add --transport http graphify-all \
-  https://<api-id>.execute-api.<region>.amazonaws.com/v1/mcp/all \
-  --header "X-Graphify-Key: gfy_live_..."
+### 1. Choose the endpoint and key scope
 
-# or a single source
-claude mcp add --transport http graphify-requests \
-  https://<api-id>.execute-api.<region>.amazonaws.com/v1/mcp/github__psf__requests__main \
-  --header "X-Graphify-Key: gfy_live_..."
+Open **MCP Servers** or a source group's **Connection guide**. Choose the source, group, or public hub you want the client to query.
+
+Issue a key for that endpoint in **API Keys** or through the guide. Use an explicit source/group scope when the client only needs that context. Keys are shown once, can expire, and can be revoked from the console. Keep client configuration containing a key out of version control.
+
+![Group connection guide with client configuration and copy actions](docs/screenshots/guide-connect.en.png)
+
+The guide generates configuration for Claude Code, Cursor, and VS Code. Copy the format for your client; these clients use different configuration containers.
+
+### 2. Add the server to Claude Code
+
+Use the exact endpoint from the guide, including `/v1/mcp/<server-id>`.
+
+```bash
+export GRAPHIFY_MCP_URL='https://<api-id>.execute-api.<region>.amazonaws.com/v1/mcp/<server-id>'
+
+# Paste the issued key and press Enter. Input is hidden.
+read -r -s GRAPHIFY_API_KEY
 ```
 
-Any client that speaks MCP **streamable HTTP** with a custom header works (Cursor, Kiro, Amazon Q Developer CLI, the MCP Inspector). Keys become active about a minute after issuance (API Gateway usage-plan propagation).
+After entering the key, run this in the same terminal:
 
-**Claude Code shows "Needs authentication".** This API authenticates with the static `X-Graphify-Key` header and has no OAuth. Claude Code marks a server as needing authentication the first time a request returns 401/403 — a wrong or placeholder key, a key scoped to a different server (a source-scoped key gets 403 on `all` and on other sources), or a key issued seconds ago — and then **skips connecting** until that cache is cleared, even after you fix the key. To recover: fix the key (`claude mcp remove <name>` then `claude mcp add … --header "X-Graphify-Key: gfy_live_…"`), then clear the cache with `/mcp` → the server → *Clear authentication* (or delete its entry from `~/.claude/mcp-needs-auth-cache.json`) and reconnect. Check the server itself with `curl -s -X POST -H "X-Graphify-Key: …" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' <url>` — 200 means the key and scope are right; the 401/403 bodies carry a `hint`. The endpoint answers GET/DELETE with a spec-legal 405 and undefined routes with 404, so a healthy client never sees a 403 during the handshake.
+```bash
+claude mcp add --transport http graphify-project "$GRAPHIFY_MCP_URL" \
+  --header "X-Graphify-Key: $GRAPHIFY_API_KEY"
+```
 
-Then ask your agent things like *"Which modules does `Session` depend on, and who calls `merge_environment_settings`?"* — the graph answers structure questions that grep cannot, and `read_source` lets the agent verify before it answers.
+MCP clients authenticate with `X-Graphify-Key`. They do not need AWS credentials. The endpoint uses Streamable HTTP; it does not provide an OAuth login flow.
 
-## Configuration
+A new key may take about a minute to propagate through the API Gateway usage plan. If a client reports authentication failure, verify the endpoint and key scope first, wait for propagation, and reconnect.
 
-Pass CDK context flags at deploy time (`-c key=value`):
+### 3. Verify the connection
 
+Ask the client to list the server's tools. You can also check the same endpoint directly:
 
-| Flag                      | Default               | Purpose                                                                                                                                                                 |
-| ------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stack_name`              | `GraphifyMcpPlatform` | CloudFormation stack name (the `GRAPHIFY_STACK_NAME` env var works too and is also read by the operator scripts)                                                        |
-| `runtime_name`            | `graphify_mcp`        | Naming stem for the CodeBuild project, log groups and services (`[a-zA-Z][a-zA-Z0-9_]{0,47}`, **no hyphens**)                                                           |
-| `github_token_secret_arn` | —                     | Secrets Manager secret holding a GitHub PAT for polling; strongly recommended beyond light testing                                                                      |
-| `build_compute`           | `large`               | CodeBuild size for graph builds: `small` (2 vCPU/4 GB, free-tier eligible), `medium` (4/8), `large` (8/16). Large repos need `large` to avoid OOM during graph assembly |
-| `hub_cpu` / `hub_memory`  | `2048` / `4096`       | Fargate size of the hub task (Fargate CPU/memory units)                                                                                                                 |
-| `nag`                     | off                   | `-c nag=true` runs [cdk-nag](https://github.com/cdklabs/cdk-nag) AwsSolutions checks during `cdk synth`                                                                 |
+```bash
+curl --fail-with-body --silent --show-error \
+  -X POST "$GRAPHIFY_MCP_URL" \
+  -H "X-Graphify-Key: $GRAPHIFY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
+An HTTP success alone is not enough: check that the JSON-RPC response contains `result.tools`, not an `error`. The returned schema is the authority for tool arguments. Single-source and group schemas can differ.
 
-Per-source settings live on the registry row and are set at registration or in the console: poll interval, webhook vs polling, public/private scope, per-repo task size (`service_cpu`/`service_memory`, default 0.5 vCPU / 2 GB — bump for very large graphs), prune paths, and — for document sources (docs-site URLs and file folders) — LLM-assisted extraction (`llm_extract`, uses Bedrock at build time) with its model (`llm_model`, an allow-listed Bedrock inference profile — Sonnet 5 default, Opus 5, Sonnet 4.6, Opus 4.8, Haiku 4.5), raster images through Claude vision (`llm_images`, file sources only), and the Markdown size above which a build falls back to the quick-scan (`llm_corpus_cap_mb`, default 64 MB, max 512). All of these are set at registration or later from the source's **AI extraction settings** panel; saving starts a rebuild, and enabling extraction gives the source a 120-minute build timeout when it has none.
+### Tools and example tasks
 
-## Cost
-
-Estimates use **public on-demand prices for `ap-northeast-2` (Seoul)** as of September 2026, 730 hours/month, and exclude free tiers and taxes. Verify with the [AWS Pricing Calculator](https://calculator.aws/) for your region and usage.
-
-The always-on query plane dominates. Everything else is request-priced and stays in the low single digits of dollars at sample scale.
-
-
-| Component                                                                   | Sizing                                                  | Approx. monthly                                                                              |
-| --------------------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Hub Fargate task** (Graviton, always on)                                  | 2 vCPU / 4 GB (default)                                 | ≈ $66 (≈$39 with `-c hub_cpu=1024`)                                                          |
-| **Per-source Fargate task** (Graviton, always on)                           | 0.5 vCPU / 2 GB (default)                               | ≈ $20 **per source**                                                                         |
-| Public IPv4 address per task (tasks sit in public subnets, no NAT gateway)  | $0.005/h                                                | ≈ $3.65 per task                                                                             |
-| Cloud Map private DNS namespace                                             | 1 hosted zone                                           | ≈ $0.50                                                                                      |
-| Secrets Manager                                                             | webhook HMAC secret (+ one per private-repo PAT)        | $0.40 per secret                                                                             |
-| CodeBuild (ARM)                                                             | `large` ≈ $0.015/min; typical build 1–4 min; LLM document builds 20–150 min | ≈ $0.05 per typical build, ≈ $0.3–2.3 of CodeBuild time per LLM document build (`small` has 100 free min/month)                                           |
-| API Gateway, Lambda, DynamoDB (on-demand), S3, EventBridge, CloudWatch Logs | request-priced                                          | ≈ $1–3                                                                                       |
-| CloudFront (console + streaming origin), Cognito                            | free tier covers sample usage                           | ≈ $0                                                                                         |
-| **Bedrock (Playground + `llm_extract` builds)**                             | Claude Sonnet 4.6 / Sonnet 5, $3 /$15 per 1M input / output tokens | ≈ $0.15–0.25 per agentic turn (a tool-calling turn observed at 46k input / 3k output tokens); LLM builds: 24 regulatory PDFs ≈ $4.6, a 168-PDF / 13 MB-Markdown corpus ≈ $60 per cold build (cached re-builds pay only for changed documents) |
-
-
-**Example: hub + 3 sources** ≈ $66 + 3 × $20 + 4 × $3.65 + ≈ $3 ≈ **$145/month**, plus Playground usage. A minimal deploy with the hub only is ≈ $70/month.
-
-Ways to reduce cost: `-c hub_cpu=1024 -c hub_memory=2048` (≈ $33 hub), deregister sources you are not using (`scripts/deregister_repo.py` deletes the service), `-c build_compute=small` for small repos, and `cdk destroy` when idle — every graph is rebuilt from the registry on re-registration.
-
-## Limits and quotas
-
-Limits enforced by this sample (all adjustable in code):
-
-
-| Area                    | Limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Data plane**          | Per API key: 20 requests/s, burst 40, **500,000 requests/month** (API Gateway usage plan). Stage-wide: 100 rps / 200 burst. Authorizer cache TTL 0 (revocation is immediate). Proxy Lambda timeout 60 s; the REST integration ceiling is 29 s per call                                                                                                                                                                                                                                                                      |
-| **API keys**            | At most **10 active keys per user** (an 11th mint returns 409; revoked or expired keys free their slot). Format `gfy_live_<kid>_<secret><crc>`; expiry 1–730 days (default 365); shown once                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **Graph serving cap**   | The MCP server (graphify) refuses to load a `graph.json` above **512 MiB**, and the hub merge skips such graphs. A build that produces one is marked **`TOO_LARGE`** instead of `READY` (red pill in the console, `last_error` explains); the source keeps its explorer bundle but its tool calls fail until the graph is shrunk (`prune_paths`, splitting the source). Below the cap, resident memory is roughly 7× file size, so size `service_memory` accordingly (defaults 0.5 vCPU / 2 GB; tiers up to 4 vCPU / 30 GB) |
-| **Source snapshot cap** | The build uploads the checkout as `src.tar.gz` only when it is ≤ **200 MB** compressed; larger sources get a graph but no `search_code`/`read_source` and no inline source viewer (the console shows a `no source` badge, `has_snapshot: false` in the API). Inside a snapshot, files &gt; 20 MB are skipped and extraction stops at 400 MB uncompressed                                                                                                                                                                    |
-| **Builds** | CodeBuild `large` (8 vCPU / 16 GB ARM) by default, **60 min timeout**. Both are overridable per source on the registry row: `build_timeout_minutes` (CodeBuild's 5–480 range; set to 120 automatically when LLM extraction is enabled on a source without one) and `build_compute` (CodeBuild's own enum, `BUILD_GENERAL1_SMALL\|MEDIUM\|LARGE`, unlike the `small\|medium\|large` deploy-time flag). The poller, the console rebuild and `scripts/update_repo_runtimes.py --rebuild` all forward them. Build history kept 30 days in `history/`; poller every 5 min; webhook repos keep a 6 h safety poll |
-| **Docs-site sources** | 200 pages per crawl by default, ≤ 500 (`max_pages`); 5 MB per page, 10 MB per sitemap, ≤ 3 redirects; same host + path prefix only, robots.txt honored, private/link-local targets refused, re-crawl every 6 h by default |
-| **File sources** | Upload: **100 MB per file** (presigned POST), ≤ 200 files per presign/delete request, console lists up to 2,000 objects. Build: a folder is fetched only when it holds ≤ **20,000 files and ≤ 1 GB** in total (otherwise the build fails with a log line). PDF/DOCX/XLSX are converted at build time — a PDF becomes a folder of section-aligned Markdown parts (`<name>.pdf.d/001-<title>.md`, split at headings detected from bookmarks, bold/larger fonts and 제N장/N.N numbering; each page keeps a `p.N` marker), stops at 2,000 pages, and each part is truncated at 10 MB; image-only PDFs are skipped. Change detection hashes the upload prefix listing; files are materialized under NFC names (keys synced from macOS arrive NFD, and the LLM cites paths in NFC). **Prefer source Markdown/HTML trees over a rendered PDF when you have them**: PDF text loses styling and tables, and headings are recovered heuristically (a 590-page guide extracted to 409 nodes as one un-split PDF, versus 707 as 168 Markdown pages plus images). Enabling `llm_extract` sets `build_timeout_minutes` to 120 when the source has none |
-| **LLM-assisted extraction** | `llm_extract` runs only while the converted Markdown corpus is under the source's **corpus cap** (`llm_corpus_cap_mb`, default **64 MB** ≈ 16M input tokens, max 512, set in the AI extraction panel); above it the build deterministically falls back to the quick-scan (`LLM extract skipped … cap` in the log) so token spend stays bounded. Extraction runs 6 Bedrock workers and checkpoints the semantic cache to S3 every 10 minutes, so a build that hits its timeout resumes from where it stopped. Completed chunks are cached in S3 (`llmcache`), so retries and re-syncs only pay for what changed. Long documents are split recursively when Claude's output is truncated, which is what makes these builds slow: budget **roughly 1 hour cold per 4 MB corpus** and set `build_timeout_minutes` ≥ 90 for such sources. Chunks are packed to **30k input tokens** (`--token-budget`, half of graphify's default) and output is capped at **64k tokens per call** (`GRAPHIFY_MAX_OUTPUT_TOKENS`, up from graphify's 16k default; every allow-listed model accepts it) with a 1,500 s Bedrock read timeout — together they keep dense text from hitting the cap and triggering graphify's bisect-and-keep-partial fallback. `llm_images` (file sources) sends png/jpg/gif/webp through the vision path — ≈ 1.6k tokens per image, 5 MB per image, 20 per request, and above **600 images** the build extracts text only. Figures embedded in PDFs are pulled out as well: unique by content, ≥ 20 KB and ≥ 200 px, largest first, a hard **300 across the corpus** shared by page count, downscaled to 1,280 px, never copied into the source snapshot. `llm_model` picks the Bedrock model; the S3 semantic cache is namespaced per model, so the first build after switching pays full price |
-| **Platform tools**      | `search_code`: 1 MB scan cap per file, 5 s budget, 100 results; `read_source`: ≤ 400 lines per call                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Graph explorer**      | 500 presigned bundle URLs per user per day (300 s TTL); 3,000 inline source reads per user per day; raw-graph fallback up to 32 MB; explorer layout skipped above 12,000 communities                                                                                                                                                                                                                                                                                                                                        |
-| **Playground**          | 20,000,000 Bedrock tokens per user per day (resets 00:00 UTC); ≤ 60 messages per conversation, ≤ 48 tools, ≤ 4,096 output tokens per call, tool results truncated at 16,000 chars, 1–30 tool rounds per turn (default 8); route throttles 5 rps for chat, 20 rps for the MCP bridge; streaming Lambda reserved concurrency 20                                                                                                                                                                                                |
-| **Console API**         | Cognito is invite-only (no self sign-up); graph routes throttled at 5 rps                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-
-
-### How big can a source be?
-
-The hard ceiling is the **512 MiB `graph.json` serving cap**; everything else is a matter of build time and task memory. Data points from this deployment (CodeBuild `large`, `graphifyy` 0.9.51):
-
-| Source | Build | Result |
+| Task | Ordinary source or public hub | Source group |
 | --- | --- | --- |
-| `pallets/click` (typical library) | ≈ 1 min | 2 MB graph, default 0.5 vCPU / 2 GB task |
-| `BerriAI/litellm` (≈ 1 M LOC monorepo) | a few minutes | 81 MB graph, needs a 1 vCPU / 4 GB task (~7× RSS rule) |
-| 24 Korean regulatory PDFs, `llm_extract` | 52 min cold, 30 min warm cache | 1.6 MB semantic graph; timed out at the old 30 min cap |
-| 590-page user guide as one 29 MB PDF, `llm_extract` | 18 min | only 409 nodes — sparse; re-uploaded as 168 Markdown pages instead |
-| 168 Korean regulatory/cloud-security PDFs (493 MB, 7,759 pages), `llm_extract` + `llm_images` | ≈ 2 h 15 min (conversion ≈ 25 min, 127 Bedrock chunks on 6 workers, 1 truncation) | 4,301 nodes / 5,027 edges incl. 171 image nodes, 8.5 MB graph; ≈ $60 in Bedrock tokens cold (13 MB of Markdown) |
-| Linux kernel, full tree | ≈ 110 min (240 min cap) | **1.6 GB graph → `TOO_LARGE`**, hub merge skipped it |
+| Find and inspect nodes | `query_graph`, `get_node` | `query_graph`, `get_node` |
+| Follow relationships | `get_neighbors`, `shortest_path` | `get_neighbors`, `find_path` |
+| Inspect relation evidence | Node and edge metadata | `get_relation` with the stored evidence |
+| Summarize graph structure | `get_community`, `god_nodes`, `graph_stats` | No separate `graph_stats` tool |
+| Search and read source text | `search_code`, `read_source` on individual sources only; unavailable on the hub | Version-aware `search_code`, `read_source` |
 
-Rules of thumb: the default 2 GB task serves graphs up to roughly 250 MB; anything approaching the 512 MiB cap needs a 4–8 GB task. A monorepo that would exceed the cap must be registered with `prune_paths` (drop tests, vendored code, docs, whole subsystems) or split into several sources — there is no runtime setting that makes an oversize graph loadable.
+The `query_graph` input differs too: an ordinary source takes `{"question":"fund change"}`, while a group takes `{"query":"REQ-102"}`. Group source search is case-sensitive literal search; ordinary source search also supports regex and case-insensitive options. Use the selected server's returned schema.
 
-AWS service quotas worth checking before scaling out: Fargate on-demand vCPU quota per region (each source adds a task), Cloud Map services per namespace, API Gateway account-level throttle, Lambda concurrent executions (the streaming Lambda reserves 20), Bedrock tokens-per-minute for the models you enable, and CodeBuild concurrent builds.
+Graphify's upstream PR tools (`list_prs`, `get_pr_impact`, `triage_prs`) remain advertised on ordinary sources and the hub, but require a checkout and `gh`. This deployment does not provision those dependencies for PR operations. Group endpoints do not advertise those PR tools.
 
-## Security considerations
+Useful prompts for a coding assistant:
 
-This is sample code. The design keeps a small attack surface — nothing but API Gateway, CloudFront and Cognito is reachable from the internet; Fargate tasks admit only the proxy Lambda's security group; API keys are stored as SHA-256 hashes; PATs never leave Secrets Manager/CodeBuild; the webhook verifies `X-Hub-Signature-256` over the raw body; the console renders model output through DOMPurify — but before exposing it to real users review at least:
+> Find the route for changing a fund. Follow its backend validation calls, then show the frontend call site and linked requirement or QA references. Cite the source files and distinguish stored links from conclusions you infer.
 
-- **Trust boundary of the console.** Every signed-in member can see the public catalog (including owner e-mail addresses) and search other members when granting access. Treat the console as an internal tool for a team you trust, or tighten `search_users`/catalog fields.
-- **cdk-nag findings.** `npx -y aws-cdk@2.1139.0 synth -c nag=true` reports the AwsSolutions rules this stack does not yet satisfy (S3 access logging, CloudFront/WAF/geo restrictions and TLS policy on the default certificate, Cognito MFA and advanced security, API Gateway access logs and request validation, VPC flow logs, ECS Container Insights, scoped-down IAM wildcards). Add these controls or documented suppressions for a production deployment.
-- **Public subnets without NAT.** Tasks and the proxy Lambda run in public subnets with security-group isolation to keep idle cost near zero. Private subnets + NAT (or interface endpoints) are a straightforward change in `cdk/graphify_stack.py` if your policy requires it.
-- **Base image vulnerabilities.** The query-plane image is Debian-based `python:3.12-slim` from ECR Public with `apt-get upgrade` at build time; remaining findings are unfixed upstream Debian CVEs (see `trivy image --ignore-unfixed`). Rebuild regularly (`cdk deploy` + `scripts/sync_runtimes.py`).
-- **Bedrock data handling.** The Playground sends graph content and your prompts to Bedrock in your account; its model picker lists Sonnet 4.6 and Opus 4.6–4.8; add Claude 5 ids in `console/index.html` once your account's Bedrock data-retention mode allows them. LLM-assisted extraction (`llm_extract`) sends document text — and, with `llm_images`, images — to Bedrock at build time using the source's chosen model (Sonnet 5 by default); review your account's Bedrock data-retention posture before enabling it on sensitive corpora.
+> Before changing this API response field, identify directly connected callers and tests. Read the relevant source ranges and list anything the graph does not establish.
+
+## Test in Playground
+
+Select an accessible server, load its tools, and use either a direct tool call or chat with Claude. The Playground uses your signed-in permissions, so you do not need to paste an API key.
+
+![Playground configured to inspect a group's MCP tools](docs/screenshots/guide-playground.en.png)
+
+Start with a direct tool call to separate tool connectivity from model behavior: use `graph_stats` with `{}` on an ordinary source, or `query_graph` with `{"query":"REQ-102"}` on the example group. Then ask a small question with a known answer and check the returned source evidence.
+
+The tool-round limit is configurable from 1 to 30, with a default of 8. Increasing it allows more exploration but can increase latency and Bedrock token cost. Use **Stop** to stop a running response. Extraction settings, the group AI setting, and Playground chat are separate sources of model usage.
+
+## Diagnose a failed build
+
+In **Sources**, open **Build details / logs** for the affected source.
+
+![Build diagnostics modal showing an illustrative failure and suggested checks](docs/screenshots/guide-build.en.png)
+
+*This screenshot uses a synthetic failure to demonstrate the diagnostics panel.*
+
+1. Compare the source state with the latest CodeBuild state. A successful CodeBuild execution can still leave a source failed if graph publication failed.
+2. Read the failed phase, error context, and recent logs. Use **Earlier logs** for the same build's preceding events.
+3. Correct the input or settings. The panel links to file, AI extraction, and crawl controls where applicable.
+4. Rebuild, refresh the diagnostics, and verify the graph and source text after publication.
+
+Hints are based on error keywords. They point to checks; they are not an AI root-cause diagnosis. Missing logs and permission failures appear as separate states. See [build diagnostics](docs/build-diagnostics.md) for access rules and log limits.
+
+| Symptom | What to check |
+| --- | --- |
+| Git authentication failure | Repository URL/ref and the PAT's read permissions. |
+| Bedrock access or model error | Account/model access, inference profile, and invoking role permissions. |
+| OCR or conversion failure | The named file/page, password protection, size/page limits, and conversion report. |
+| Timeout, throttling, or memory error | Build duration, CodeBuild size, service quotas, and corpus size. Avoid repeating an unchanged oversized build. |
+| Group cannot read source evidence | Source permissions, immutable version availability, and whether the group needs rebuilding. |
+| Client receives 401 or 403 | Issued key, expiry, endpoint scope, usage-plan propagation, and the response's `hint`. |
+| Graph page cannot render | WebGL support and access to the SRI-pinned CDN scripts. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Sources[Git repositories, sites, and files] --> Build[CodeBuild extraction]
+  Bedrock[Amazon Bedrock] -. Optional extraction and OCR .-> Build
+  Build --> Store[S3 graphs and source versions]
+  Store --> Runtime[Fargate source servers and public hub]
+  Store --> Worker[Group build Lambda]
+  Bedrock -. Optional relation assessment .-> Worker
+  Worker --> GroupStore[S3 group versions]
+  Client[MCP clients] --> Gateway[API Gateway and scoped key authorization]
+  Gateway --> Proxy[MCP proxy Lambda]
+  Proxy --> Runtime
+  Proxy --> GroupQuery[Group query module inside the proxy]
+  GroupQuery --> GroupStore
+```
+
+| Part | Responsibility |
+| --- | --- |
+| Build pipeline | EventBridge, Lambda, and CodeBuild detect changes, extract graphs, publish source snapshots, and record build status. |
+| Ordinary source serving | An ARM Fargate task per source and a public hub load graphs from S3. Source tasks also expose snapshot search/read tools. |
+| Source groups | A Lambda worker composes immutable versions and relations. Queries use the shared module in the MCP proxy Lambda. |
+| Access and usage | API Gateway, Lambda authorization, and DynamoDB enforce key scope and record usage. Group queries also recheck source access and versions. |
+| Console | S3 and CloudFront serve the browser app. Cognito authenticates users to the management API. |
+| Playground | Lambda calls Bedrock and runs permitted MCP tools through the proxy Lambda. A separate streaming path delivers chat output. |
+
+Ordinary source graphs generally use a precomputed visualization bundle. Group graphs use authenticated, paginated graph reads and browser layout. Source-group rendering is therefore not the same layout path as the ordinary source bundle.
+
+## Configuration and limits
+
+Keep account, region, stack name, and runtime naming consistent across deploys and scripts.
+
+| Deployment setting | Default | Purpose |
+| --- | --- | --- |
+| `stack_name` / `GRAPHIFY_STACK_NAME` | `GraphifyMcpPlatform` | Select the CloudFormation stack. |
+| `runtime_name` | `graphify_mcp` | 1 to 48 characters. Start with a letter; then use letters, digits, or underscores. |
+| `build_compute` | `large` | Project CodeBuild size: `small`, `medium`, or `large`. |
+| `hub_cpu`, `hub_memory` | `2048`, `4096` | Hub task CPU units and memory in MiB. |
+| `github_token_secret_arn` | Unset | Optional PAT secret for GitHub polling. |
+| `nag` | Off | Run AwsSolutions checks with `-c nag=true`. |
+
+Per-source task sizing, polling, build timeout, pruning, and extraction settings are separate from deployment defaults. Some are operator settings rather than console controls. See [the engineering reference](docs/reference.md) and the source API code for their exact fields.
+
+| Limit | Current behavior |
+| --- | --- |
+| Sources per group | Up to 8. |
+| Group graph | Up to 32 MiB, 50,000 nodes, and 200,000 links. Each input source graph must also fit the 32 MiB version-artifact limit. |
+| Group evidence text | Up to 2 MiB per file and 32 MiB per group. |
+| Ordinary runtime graph | Graphs above 512 MiB cannot be served; reduce scope or split the source. Memory can constrain smaller graphs too. |
+| Source reads | Up to 400 lines per call. |
+| Browser file upload | Up to 100 MiB per file. |
+| File corpus ingestion | Up to 20,000 files and 1 GiB total. |
+| Source snapshot | Up to 200 MiB compressed. An oversized file-source snapshot fails the build; Git/URL snapshots are best-effort. |
+| PDF conversion | Up to 2,000 pages per PDF. Oversize conversion is an explicit failure. |
+| PDF OCR | Default 300 new pages per build; valid cached pages are reused. This is separate from embedded-image selection. |
+| API keys | Up to 10 active keys per user. |
+| Playground | 1 to 30 tool rounds per turn, default 8. |
+
+CodeBuild's project timeout is 60 minutes. API-managed document AI sources get a 120-minute default when no source-specific override exists. Check the actual source setting for large builds. Read [document processing limits](docs/document-sources-ops.md) and [group limits](docs/source-groups.md#cost-and-limits) before importing a large corpus.
+
+## Cost planning
+
+A deployed but idle platform still incurs charges. The hub and ordinary per-source Fargate services remain running. Creating a group does not create another always-on Fargate service, and grouping existing sources does not stop their existing services.
+
+With the default single-task services, three ordinary sources and two groups mean **four running Fargate tasks**: one hub and three source tasks. The two groups add on-demand processing and storage costs.
+
+| Cost driver | How to estimate or control it |
+| --- | --- |
+| Fargate and public IPv4 | Count running tasks, their CPU/memory, and active hours. Remove unused source services. |
+| Source builds | CodeBuild size multiplied by build duration and frequency. Large documents and retries can dominate build time. |
+| Bedrock | Include semantic extraction, PDF OCR, community labeling, optional group assessment, and Playground turns. Track input/output tokens by model. |
+| Group processing | Lambda duration, S3 reads, and stored versions. Unchanged source pairs can reuse previous decisions. |
+| Storage and requests | Include uploads, snapshots, graph versions, logs, API requests, DynamoDB, and data transfer. |
+
+Use the [AWS Pricing Calculator](https://calculator.aws/) with your region and workload. For a token-priced model, estimate model spend as:
+
+```text
+Bedrock cost = input tokens / 1,000,000 × input price
+             + output tokens / 1,000,000 × output price
+```
+
+Account for caching and other charges using that model's current pricing. Group token reservations are limits, not billed usage. Missing usage data does not mean zero cost.
+
+Start with a small representative corpus, record a cold build and a cached rebuild separately, and set AWS Budgets alerts. Avoid estimating extraction quality from node counts or presenting demo graphs as accuracy benchmarks.
+
+## Production deployment considerations
+
+Before onboarding a team, review these settings against your requirements:
+
+- **Source visibility and sharing:** public content enters the hub. Group membership never replaces source permissions. Review catalog and user-search fields before allowing untrusted tenants.
+- **Authentication:** configure appropriate Cognito password, MFA, account recovery, and user-offboarding controls. Revoke unused client keys.
+- **Network controls:** source tasks accept inbound traffic from the proxy security group. Review subnet design, outbound access, CloudFront/API protections, and the use of public IPv4 addresses.
+- **Logs and data retention:** set retention for build and Lambda logs, review upload/version retention, and protect any raw extraction diagnostics. Log masking cannot identify every possible secret.
+- **Model data handling:** review the actual Bedrock model, inference routing, and account policies before sending sensitive documents or prompts. Do not infer permission from a model appearing in a picker.
+- **Operational readiness:** review cdk-nag findings, service quotas, image/dependency scans, budgets, backup/recovery, and a controlled upgrade procedure.
+
+These controls need deployment-specific review. Passing a local test suite does not establish production readiness.
 
 ## Operations
 
-There is no unit-test suite; the `scripts/*_smoke.py` scripts are end-to-end checks against the live stack:
+### Validate a local change
+
+Offline tests use synthetic data and mocked AWS clients:
 
 ```bash
-uv run python scripts/platform_smoke.py --email <e> --password <p>   # Cognito → register → key → MCP call → negatives → usage
-uv run python scripts/playground_smoke.py --email <e> --password <p> # tools/list → chat → tool-use loop → negatives
-uv run python scripts/graph_smoke.py --email <e> --password <p>      # explorer API + presigned bundle (34 checks)
-uv run python scripts/smoke_test.py --repo-id <id> --node <name>     # raw JSON-RPC through the data plane (GRAPHIFY_API_KEY)
+PYTHONPATH=lambdas/shared/python uv run python -B -m unittest discover -s tests -p 'test_*.py'
+node --test tests/test_group_graph_ui.cjs tests/test_graph_label_layout.cjs tests/test_graph_source_affinity.cjs
 ```
 
-Routine tasks:
-
-- **Roll the query plane** after changing `runtime/` (`cdk deploy` publishes the image, then `uv run python scripts/sync_runtimes.py` restarts every per-source service).
-- **Rebuild one source** (e.g. to generate its explorer bundle): `uv run python scripts/update_repo_runtimes.py --rebuild --repo-id <id>`.
-- **Remove a source**: `uv run python scripts/deregister_repo.py --repo-id <id> [--purge]`.
-- **Logs**: `/graphify/<runtime_name>/services` (every Fargate task, hub included) is created by the stack with **30-day retention**. The CodeBuild project's `/aws/codebuild/<runtime_name>_graph_build` group and each Lambda's `/aws/lambda/...` group are created by those services on first use and **never expire** — attach explicit `logs.LogGroup`s in `cdk/graphify_stack.py` (`log_group=` on the functions, `logging=` on `codebuild.Project`) if your policy needs them trimmed.
-- **Security scans**: `npx -y aws-cdk@2.1139.0 synth -c nag=true -o /tmp/cdk.out.nag` writes the cdk-nag report; `trivy image` on the image built from `runtime/Dockerfile`, `npx retire` on `console/` plus the SRI-pinned CDN files, and `npm audit` in `lambdas/playground_stream/` cover the rest of the stack.
-
-## Repository layout
-
-
-| Path                 | What                                                                                                                                                                 |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cdk/`               | CDK app (Python): VPC + ECS Fargate query plane, S3, DynamoDB, CodeBuild + inline buildspec, Lambdas, API Gateways, Cognito, CloudFront                              |
-| `cdk/build_scripts/` | Scripts shipped to CodeBuild: `make_viz.py` (layout bundle), `docs_crawler.py`, `convert_docs.py`, `fetch_uploads.py`, `docs_extract_driver.py` (quick-scan driver)  |
-| `runtime/`           | Query-plane container: `Dockerfile` (linux/arm64) + `entrypoint.py` (S3 sync, hot-reload, `search_code`/`read_source`)                                               |
-| `lambdas/`           | `poller`, `completion`, `webhook` (build plane) · `authorizer`, `mcp_proxy` (data plane) · `platform_api` (management) · `playground`, `playground_stream` (Bedrock) |
-| `console/`           | Console SPA (`index.html`, `graph.js`, `graph.css`) deployed to S3 + CloudFront                                                                                      |
-| `scripts/`           | Operator CLI: register/deregister sources, create users, sync runtimes, smoke tests, MCP config printer                                                              |
-| `docs/`              | Architecture diagrams (ko/en), screenshots, [engineering reference](docs/reference.md), [document-source operations](docs/document-sources-ops.md)                   |
-| `webapp/`            | Pre-Fargate localhost setup console — **stale**, kept for reference only                                                                                             |
-
-
-## Clean up
+Console browser checks use an existing Playwright installation and Chrome. The scripts do not install packages. Run navigation checks first to prepare the SRI-verified CDN cache used by the offline consistency suite:
 
 ```bash
-# delete per-source Fargate services first (they are created outside CloudFormation)
-uv run python scripts/deregister_repo.py --repo-id <id> --purge   # repeat per registered source
+export GRAPHIFY_PLAYWRIGHT_MODULE=/path/to/existing/playwright
+node tests/test_console_group_navigation.cjs
+node tests/test_console_group_consistency.cjs
+```
+
+See [console verification](docs/console-ux.md#local-verification) for the other suites. Live smoke scripts under `scripts/` are separate: some register sources or issue keys, and chat checks can incur Bedrock charges. Run them only in the intended test deployment with suitable accounts.
+
+### Upgrade and maintain a deployment
+
+```bash
+# Review a stack change, then deploy it using the original stack name.
+npx -y aws-cdk@2.1139.0 diff
+npx -y aws-cdk@2.1139.0 deploy
+
+# After a runtime image change, roll dynamically created source services.
+uv run python scripts/sync_runtimes.py --region "$AWS_REGION"
+
+# Update the runtime and rebuild one dedicated source.
+export GRAPHIFY_SOURCE_ID='paste-source-id-from-console'
+uv run python scripts/update_repo_runtimes.py --region "$AWS_REGION" --rebuild --repo-id "$GRAPHIFY_SOURCE_ID"
+```
+
+For source-group changes, deploy the shared layer, API, proxy, Playground, worker, publisher, and console together. Rebuild sources that lack the required immutable artifacts before rebuilding their groups.
+
+The runtime scripts operate on sources with dedicated services. For a group-only source, use **Rebuild** in the console; `update_repo_runtimes.py` excludes sources registered with `--no-runtime`.
+
+An operator can preserve a reviewed existing runtime image with `-c runtime_image_uri=<ECR-URI@sha256:digest>` during a management-only release. Use this only when runtime code is intentionally unchanged; otherwise deploy the new image and roll source services.
+
+### Remove resources
+
+Export any source material or graph artifacts you need to retain. Revoke API keys while their platform records still exist. Then remove dynamically created per-source services before destroying the stack, using the original `GRAPHIFY_STACK_NAME` and region:
+
+```bash
+# Repeat for each registered source that should be removed.
+export GRAPHIFY_SOURCE_ID='paste-source-id-from-console'
+uv run python scripts/deregister_repo.py --region "$AWS_REGION" --repo-id "$GRAPHIFY_SOURCE_ID" --purge
+
+# This deletes stack-owned data and infrastructure.
 npx -y aws-cdk@2.1139.0 destroy
 ```
 
-The graph bucket, the tables and the `/graphify/<runtime_name>/services` log group are created with `RemovalPolicy.DESTROY`, so `cdk destroy` removes them; the CodeBuild and Lambda log groups are service-created and must be deleted by hand, and the ECR image lives in the CDK bootstrap repository.
+Stack destruction deletes its buckets, tables, and Cognito pool. Inspect remaining CodeBuild/Lambda log groups, PAT secrets, dynamic API Gateway keys, ECS task-definition revisions, CDK bootstrap resources, ECR images, and any failed runtime cleanup separately. Source deregistration alone is not a complete purge of group/version artifacts. Deleting a source group alone does not delete its original sources or stop their ordinary runtimes.
 
-## Security
+## Repository map
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+| Path | Contents |
+| --- | --- |
+| `cdk/` | Infrastructure and source-build pipeline. |
+| `cdk/build_scripts/` | Document conversion/OCR, extraction, visualization, and immutable source publication. |
+| `runtime/` | Fargate graph server wrapper, graph synchronization, and source search/read tools. |
+| `lambdas/group_worker/` | Group composition, relation validation, reconciliation, and version cleanup. |
+| `lambdas/shared/python/` | Group authorization and query helpers shared by Lambdas. |
+| `lambdas/platform_api/` | Source, group, key, user, upload, and build-diagnostics APIs. |
+| `lambdas/playground*` | Buffered and streaming Bedrock Playground backends. |
+| `console/` | Bilingual SPA, task modals, source-group pages, and graph explorer. |
+| `tests/` | Offline Python and JavaScript tests plus console browser suites. |
+| `scripts/` | Deployment operators, runtime maintenance, and live smoke checks. |
+| `docs/` | Detailed guides, diagrams, and screenshots. |
+| `webapp/` | Older localhost setup UI, retained for reference. Use `console/` for this deployment. |
+
+## Contributing and security reports
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [security issue reporting](CONTRIBUTING.md#security-issue-notifications).
 
 ## License
 
-This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
+This project uses the [MIT-0 License](LICENSE).
