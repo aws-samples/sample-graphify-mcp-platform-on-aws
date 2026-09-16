@@ -1,0 +1,330 @@
+/* Scoped native-dialog styles. Load after the console's base styles. */
+dialog.console-dialog {
+  --dialog-surface: var(--surface, #fff);
+  --dialog-ink: var(--ink, #0f172a);
+  --dialog-muted: var(--muted, #475569);
+  --dialog-border: var(--border, #e2e8f0);
+  --dialog-primary: var(--primary, #4f46e5);
+  --dialog-danger: var(--danger, #dc2626);
+  box-sizing: border-box;
+  inline-size: min(34rem, calc(100vw - 32px));
+  max-inline-size: calc(100vw - 32px);
+  max-block-size: calc(100vh - 32px);
+  max-block-size: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--dialog-border);
+  border-radius: 14px;
+  background: var(--dialog-surface);
+  color: var(--dialog-ink);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, .22);
+  font: 400 1rem/1.6 var(--font, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  text-align: start;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+}
+
+dialog.console-dialog[open] { display: flex; }
+dialog.console-dialog:not([open]) { display: none; }
+dialog.console-dialog::backdrop { background: rgba(15, 23, 42, .48); }
+html.console-dialog-open,
+body.console-dialog-open { overflow: hidden !important; overscroll-behavior: none; }
+.console-dialog *, .console-dialog *::before, .console-dialog *::after { box-sizing: border-box; }
+.console-dialog [hidden] { display: none !important; }
+
+.console-dialog .console-dialog__form {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  max-block-size: calc(100vh - 34px);
+  max-block-size: calc(100dvh - 34px);
+  margin: 0;
+  padding: 0;
+}
+
+.console-dialog .console-dialog__header {
+  flex: 0 0 auto;
+  max-block-size: 30vh;
+  max-block-size: 30dvh;
+  padding: 24px 24px 12px;
+  overflow: auto;
+}
+
+.console-dialog .console-dialog__title {
+  display: block;
+  margin: 0;
+  color: var(--dialog-ink);
+  font-family: inherit;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -.015em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-dialog .console-dialog__body {
+  min-block-size: 0;
+  padding: 0 24px 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.console-dialog .console-dialog__body:focus-visible {
+  outline: 3px solid var(--dialog-primary);
+  outline-offset: -3px;
+}
+
+.console-dialog .console-dialog__message,
+.console-dialog .console-dialog__subject {
+  margin: 0 0 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.console-dialog .console-dialog__message { color: var(--dialog-muted); font-size: .94rem; }
+.console-dialog .console-dialog__message:last-child,
+.console-dialog .console-dialog__subject:last-child { margin-block-end: 0; }
+.console-dialog .console-dialog__subject {
+  padding: 12px 14px;
+  border: 1px solid var(--dialog-border);
+  border-radius: 8px;
+  background: var(--bg, #f8fafc);
+  color: var(--dialog-ink);
+  font-size: .94rem;
+  font-weight: 600;
+}
+.console-dialog .console-dialog__field { min-inline-size: 0; }
+.console-dialog .console-dialog__label {
+  display: block;
+  min-block-size: 0;
+  margin: 0 0 8px;
+  color: var(--dialog-ink);
+  font-size: .9rem;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.console-dialog .console-dialog__input {
+  display: block;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 46px;
+  padding: 10px 12px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  background: var(--dialog-surface);
+  color: var(--dialog-ink);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  box-shadow: none;
+}
+.console-dialog .console-dialog__input::placeholder { color: var(--dialog-muted); opacity: 1; }
+.console-dialog .console-dialog__input[readonly] { background: var(--bg, #f8fafc); }
+.console-dialog .console-dialog__input[aria-invalid="true"] { border-color: var(--dialog-danger); }
+.console-dialog .console-dialog__input:focus {
+  border-color: var(--dialog-primary);
+  outline: 3px solid var(--dialog-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.console-dialog .console-dialog__error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--dialog-danger);
+  border-radius: 4px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: .9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.console-dialog .console-dialog__status { margin: 14px 0 0; color: var(--dialog-muted); font-size: .9rem; }
+
+.console-dialog .console-dialog__actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-block-start: 1px solid var(--dialog-border);
+  background: var(--dialog-surface);
+}
+.console-dialog .console-dialog__actions button {
+  min-inline-size: 96px;
+  max-inline-size: 100%;
+  min-block-size: 44px;
+  margin: 0;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+  font-size: .9rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color .12s ease-out;
+}
+.console-dialog .console-dialog__actions button:hover:not(:disabled),
+.console-dialog .console-dialog__actions button:active:not(:disabled) { transform: none; box-shadow: none; }
+.console-dialog .console-dialog__actions button:focus-visible {
+  outline: 3px solid var(--dialog-primary);
+  outline-offset: 3px;
+  box-shadow: none;
+}
+.console-dialog .console-dialog__actions .console-dialog__cancel {
+  background: var(--dialog-surface);
+  color: var(--dialog-ink);
+  border-color: #94a3b8;
+}
+.console-dialog .console-dialog__cancel:hover:not(:disabled) { background: var(--bg, #f8fafc); }
+.console-dialog .console-dialog__submit { background: var(--dialog-primary); color: #fff; }
+.console-dialog .console-dialog__submit:hover:not(:disabled) { background: #4338ca; }
+.console-dialog .console-dialog__submit--danger { background: var(--dialog-danger); }
+.console-dialog .console-dialog__submit--danger:hover:not(:disabled) { background: #b91c1c; }
+.console-dialog .console-dialog__actions button:disabled { opacity: .65; cursor: wait; }
+
+/* Permanent panels share the native top layer with the smaller action dialogs.
+   Only the body scrolls; the heading and close action stay in view. */
+dialog.console-panel-dialog {
+  --panel-width: 60rem;
+  --panel-inline-gap: max(16px, env(safe-area-inset-left), env(safe-area-inset-right));
+  --panel-block-gap: max(16px, env(safe-area-inset-top), env(safe-area-inset-bottom));
+  flex-direction: column;
+  inline-size: min(var(--panel-width), calc(100vw - var(--panel-inline-gap) - var(--panel-inline-gap)));
+  max-inline-size: calc(100vw - var(--panel-inline-gap) - var(--panel-inline-gap));
+  max-block-size: calc(100vh - var(--panel-block-gap) - var(--panel-block-gap));
+  max-block-size: calc(100dvh - var(--panel-block-gap) - var(--panel-block-gap));
+}
+dialog.console-panel-dialog[data-size="md"] { --panel-width: 42rem; }
+dialog.console-panel-dialog[data-size="xl"] { --panel-width: 76rem; }
+.console-panel-dialog .console-panel__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px 18px;
+  min-inline-size: 0;
+  max-block-size: 35vh;
+  max-block-size: 35dvh;
+  margin: 0;
+  padding: 20px 24px;
+  border-block-end: 1px solid var(--dialog-border);
+  background: var(--dialog-surface);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.console-panel-dialog .console-panel__header > :first-child {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  margin: 0;
+}
+.console-panel-dialog .console-panel__header > :is(header, div) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+.console-panel-dialog .console-panel__header > :is(header, div) > :is(h1, h2, h3, h4, h5, h6) {
+  flex: 1 1 12rem;
+}
+.console-panel-dialog .console-panel__header :is(h1, h2, h3, h4, h5, h6) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  min-inline-size: 0;
+  margin: 0;
+  color: var(--dialog-ink);
+  font: 700 1.2rem/1.45 var(--font, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.console-panel-dialog .console-panel__header :is(h1, h2, h3, h4, h5, h6) > span {
+  min-inline-size: 0;
+  flex: 1 1 12rem;
+}
+.console-panel-dialog .console-panel__header .dot { display: none; }
+.console-panel-dialog .console-panel__body {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: 0;
+  padding: 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.console-panel-dialog .console-panel__body > :last-child {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.console-panel-dialog .console-panel__body:focus-visible {
+  outline: 3px solid var(--dialog-primary);
+  outline-offset: -3px;
+}
+.console-panel-dialog .console-panel__header [data-panel-close] {
+  flex: 0 0 auto;
+  max-inline-size: 100%;
+  min-block-size: 44px;
+  margin-block: 0;
+  padding: 8px 14px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  background: var(--dialog-surface);
+  color: var(--dialog-ink);
+  font: 600 .9rem/1.5 var(--font, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: none;
+  cursor: pointer;
+}
+.console-panel-dialog .console-panel__header [data-panel-close]:hover:not(:disabled) {
+  background: var(--bg, #f8fafc);
+  transform: none;
+}
+.console-panel-dialog [data-panel-close]:focus-visible {
+  outline: 3px solid var(--dialog-primary);
+  outline-offset: 3px;
+}
+.console-panel-dialog .console-panel__error,
+.console-panel-dialog .console-panel__status { margin: 0 0 16px; }
+
+@media (max-width: 480px) {
+  .console-dialog .console-dialog__header { padding: 20px 18px 12px; }
+  .console-dialog .console-dialog__body { padding: 0 18px 20px; }
+  .console-dialog .console-dialog__actions { padding: 14px 18px; }
+  .console-dialog .console-dialog__actions button { flex: 1 1 100px; }
+  dialog.console-panel-dialog {
+    --panel-inline-gap: max(8px, env(safe-area-inset-left), env(safe-area-inset-right));
+    --panel-block-gap: max(8px, env(safe-area-inset-top), env(safe-area-inset-bottom));
+    border-radius: 10px;
+  }
+  .console-panel-dialog .console-panel__header { gap: 10px; padding: 14px 16px; }
+  .console-panel-dialog .console-panel__body { padding: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .console-dialog .console-dialog__actions button { transition: none; }
+}
+@media (forced-colors: active) {
+  dialog.console-dialog { border: 2px solid CanvasText; }
+  .console-dialog .console-dialog__actions button { border: 1px solid ButtonText; }
+  .console-dialog .console-dialog__input:focus,
+  .console-dialog .console-dialog__body:focus-visible,
+  .console-dialog .console-dialog__actions button:focus-visible,
+  .console-panel-dialog .console-panel__body:focus-visible,
+  .console-panel-dialog [data-panel-close]:focus-visible { outline-color: Highlight; }
+}

@@ -208,7 +208,7 @@ BUILD_SPEC = {
                         'printf \'%s|graphifyy=%s|prune=%s|viz=1|model=%s|llm=%s\' "$(cat /tmp/work/content_hash)" "$GRAPHIFY_VERSION" "${PRUNE_PATHS:-}" "${LLM_MODEL:-}" "${LLM_EXTRACT:-0}" > /tmp/work/source_fingerprint',
                         'PREV=$(aws s3 cp "s3://$GRAPH_BUCKET/repos/$REPO_ID/latest/source_hash" - 2>/dev/null || echo none)',
                         "CUR=$(cat /tmp/work/source_fingerprint)",
-                        'if [ "$PREV" = "$CUR" ]; then',
+                        'if [ "$PREV" = "$CUR" ] && [ "${FORCE_SOURCE_VERSION:-0}" != "1" ]; then',
                         '  echo "[build] crawl content unchanged ($CUR) — skipping graph rebuild"',
                         "  touch /tmp/work/SKIP",
                         "fi",
@@ -531,6 +531,15 @@ BUILD_SPEC = {
                         "fi",
                     ]
                 ),
+                # A versioned graph and source pair for source-group queries.
+                # Both files come from this checkout, never from mutable latest.
+                "\n".join([
+                    "if [ ! -f /tmp/work/SKIP ]; then",
+                    "set -e",
+                    _fetch_script("publish_source_version.py", "/tmp/publish_source_version.py"),
+                    "python /tmp/publish_source_version.py",
+                    "fi",
+                ]),
                 # Refresh the merged all-repos graph the hub runtime serves as
                 # its default (repos/__all__/...). merge-graphs prefixes node
                 # ids with a per-repo tag, so one query spans every repo.

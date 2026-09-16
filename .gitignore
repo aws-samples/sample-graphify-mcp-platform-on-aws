@@ -15,6 +15,10 @@ node_modules/
 .DS_Store
 .playwright-mcp/
 .claude/settings.local.json
+.omx/
+
+# Local presentation handoffs and benchmark evidence (may contain source data)
+docs/presentation-update/
 
 # Contains a live data-plane API key — regenerate with scripts/print_mcp_config.py
 .mcp.json

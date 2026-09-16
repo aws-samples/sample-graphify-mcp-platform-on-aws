@@ -136,7 +136,22 @@ Tenancy model:
 - **serverId** in the MCP URL is the `repo_id`, or `all` for the hub (merged public graph). Keys are scoped `ALL` or to explicit server ids; the authorizer gates access and the proxy re-checks scope in code.
 - The API-key data plane is the ONLY access path — the Fargate tasks are reachable solely from the proxy Lambda's security group.
 
+Build diagnostics: `GET /repos/{id}/build` is grant-gated (including public
+sources) and returns the current build's phases/failure contexts plus one
+bounded CloudWatch log page. The server verifies project and `REPO_ID`
+identity, reads only the selected build's stream, and masks known credential
+formats. The console offers manual refresh, earlier pages, copy, source
+editors and rebuild; it distinguishes absent logs from read failures. See
+[build diagnostics](build-diagnostics.md) for the API contract, limits and
+deployment checks.
+
 ## Playground — test MCP with Claude on Bedrock
+
+Source groups extend `/servers` with ready private `grp_*` servers. Their MCP
+requests use the shared group query module in the proxy Lambda, with current
+group/source authorization and immutable source versions. Group metadata,
+relationships, optional AI analysis, limits and cleanup are documented in
+[source groups](source-groups.md).
 
 The console's **Playground** tab lets any signed-in user test an MCP server end-to-end without leaving the browser:
 
@@ -351,7 +366,7 @@ uv run python scripts/register_repo.py --url https://github.com/you/yourrepo --t
 # prints the Payload URL + the command that reveals the HMAC secret
 ```
 
-Then add the webhook in GitHub (Settings → Webhooks → Add webhook): the printed Payload URL, content type `application/json`, the secret, push events only. The setup console shows the same values inline when you pick the webhook trigger.
+Then add the webhook in GitHub (Settings → Webhooks → Add webhook): the printed Payload URL, content type `application/json`, the secret, push events only. The console shows these values in a registration result dialog after webhook registration succeeds.
 
 How it works: GitHub push → **API Gateway HTTP API** → Lambda → `X-Hub-Signature-256` HMAC verified over the raw body (constant-time, before any parsing) → same claim/StartBuild path as the poller. API Gateway (not a Lambda Function URL) is deliberate: a NONE-auth Function URL puts `Principal: *` on the Lambda resource policy, which security scanners flag — and Amazon-internal tooling auto-blocks — as a world-accessible Lambda. With API Gateway the Lambda policy is scoped to `apigateway.amazonaws.com` + this API's ARN, and the HMAC remains the auth gate. Properties:
 

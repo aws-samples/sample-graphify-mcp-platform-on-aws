@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
+import group_access
+import group_query
 
 PLATFORM_TABLE = os.environ["PLATFORM_TABLE"]
 REGISTRY_TABLE = os.environ["REGISTRY_TABLE"]
@@ -36,6 +38,8 @@ SERVICE_PORT = int(os.environ.get("SERVICE_PORT", "8000"))
 UPSTREAM_TIMEOUT = 26
 
 _ddb = boto3.client("dynamodb", config=Config(retries={"max_attempts": 1}))
+_s3 = boto3.client("s3", config=Config(connect_timeout=3, read_timeout=15, retries={"total_max_attempts": 1}))
+GRAPH_BUCKET = os.environ.get("GRAPH_BUCKET", "")
 
 _enabled_cache: dict[str, tuple[bool, float]] = {}
 _ENABLED_TTL = 60.0
@@ -188,10 +192,6 @@ def handler(event: dict, _ctx) -> dict:
     if scope != "*" and server_id not in scope.split(","):
         return _jsonrpc_error(403, -32001, "API key is not scoped to this server")
 
-    host = resolve_host(server_id)
-    if not host:
-        return _jsonrpc_error(404, -32001, f"unknown MCP server '{server_id}' (not registered or disabled)")
-
     body = event.get("body") or ""
     if event.get("isBase64Encoded"):
         body = base64.b64decode(body).decode("utf-8", errors="replace")
@@ -201,6 +201,21 @@ def handler(event: dict, _ctx) -> dict:
         return _jsonrpc_error(400, -32700, "parse error: request body is not valid JSON")
     req_id = rpc.get("id") if isinstance(rpc, dict) else None
     is_notification = isinstance(rpc, dict) and "id" not in rpc
+
+    if group_access.is_group_id(server_id):
+        try:
+            result = group_query.handle_rpc(
+                _ddb, PLATFORM_TABLE, REGISTRY_TABLE, _s3, GRAPH_BUCKET, owner, server_id, rpc)
+            record_usage(kid, owner, server_id, bool(result and (
+                result.get("error") or result.get("result", {}).get("isError"))))
+            return _resp(202 if result is None else 200, "" if result is None else json.dumps(result, default=str))
+        except group_access.GroupError as exc:
+            record_usage(kid, owner, server_id, True)
+            return _jsonrpc_error(exc.status, -32001, str(exc), req_id)
+
+    host = resolve_host(server_id)
+    if not host:
+        return _jsonrpc_error(404, -32001, f"unknown MCP server '{server_id}' (not registered or disabled)")
 
     # Every service is pinned to exactly one graph (a repo's, or the hub's
     # merged PUBLIC graph), so a tool-call project_path is never legitimate

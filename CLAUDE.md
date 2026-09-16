@@ -16,7 +16,10 @@ uv run python scripts/update_repo_runtimes.py --rebuild --repo-id <id>   # rebui
 npx -y aws-cdk@2.1139.0 synth -c nag=true -o /tmp/cdk.out.nag                    # cdk-nag AwsSolutions report
 ```
 
-There is no test suite; the `scripts/*_smoke.py` E2E scripts against a deployed stack are the verification path.
+Offline regression tests live in `tests/`. Run group checks with
+`PYTHONPATH=lambdas/shared/python .venv/bin/python -B -m unittest discover -s tests -p 'test_group*.py'`.
+Document/diagnostics tests use unittest discovery too. The `scripts/*_smoke.py`
+scripts are separate live-stack checks, not prerequisites for offline tests.
 
 ## Hard constraints — do not "fix" these
 
@@ -31,6 +34,7 @@ There is no test suite; the `scripts/*_smoke.py` E2E scripts against a deployed 
 
 - Build plane: EventBridge rate(5 min) → poller Lambda (GitHub commits API w/ ETag; git smart-HTTP fallback for non-GitHub; S3 listing hash for file folders; crawl schedule for docs sites) → CodeBuild (ARM64, NO_SOURCE, inline buildspec in `cdk/buildspec.py`) → S3 `repos/<repo_id>/latest/graphify-out/graph.json`. Document sources run `cdk/build_scripts/convert_docs.py` (PDF → section-aligned Markdown parts, optional embedded-image extraction) and either the no-LLM quick-scan (`docs_extract_driver.py`) or, with `llm_extract`, a Bedrock Claude semantic pass.
 - Query plane: always-warm Fargate task per repo + a hub serving the merged all-repos graph; `runtime/entrypoint.py` syncs from S3 with atomic `os.replace()` — graphs hot-reload into live sessions, no redeploy.
+- Source groups: on-demand group queries run in the proxy Lambda using the shared layer. A separate Lambda worker composes immutable source versions and evidence-backed cross-source relations. Group grants never expand source permissions; every query rechecks source versions and grants. See `docs/source-groups.md`. Deploy layer, API/proxy/playground code, worker, publisher and console together.
 - Data plane: API GW REST `/v1/mcp/{serverId}` → REQUEST authorizer (`X-Graphify-Key`, TTL 0) → in-VPC proxy Lambda → Cloud Map DNS → task `:8000/mcp`. Fargate tasks admit only the proxy Lambda's SG. GET/DELETE answer 405; undefined routes 404; 401/403 bodies carry a `hint`.
 - Registration of a new repo creates its Fargate service dynamically with boto3 (from `lambdas/platform_api/runtimes.py` / `scripts/register_repo.py`), reusing the stack's image/roles/cluster — per-repo services are NOT in the CDK template.
 - `graphifyy` (the PyPI package) is pinned at 0.9.51 in both `cdk/buildspec.py` and `runtime/Dockerfile`; bump both together and re-run `sync_runtimes.py`. `docs_extract_driver.py` and `runtime/entrypoint.py` touch graphify internals that were verified at that version.

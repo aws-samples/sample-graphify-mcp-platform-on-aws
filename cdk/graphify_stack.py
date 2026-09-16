@@ -18,10 +18,13 @@ Query plane : ECS Fargate services (linux/arm64) running graphify's own MCP
 import re
 
 from aws_cdk import (
+    ArnFormat,
     CfnOutput,
     Duration,
+    Fn,
     RemovalPolicy,
     Stack,
+    Size,
     aws_apigateway as apigw,
     aws_apigatewayv2 as apigwv2,
     aws_apigatewayv2_authorizers as apigwv2_authorizers,
@@ -126,6 +129,15 @@ class GraphifyMcpPlatformStack(Stack):
                 ),
             ],
         )
+        # Immutable group artifacts have application-level pin-aware GC.
+        # Delete markers produced by GC must not retain the old bytes forever.
+        for prefix in ("source-versions/", "groups/"):
+            bucket.add_lifecycle_rule(
+                id="expire-group-history-" + prefix.replace("/", ""),
+                prefix=prefix, noncurrent_version_expiration=Duration.days(1),
+                expired_object_delete_marker=True,
+                abort_incomplete_multipart_upload_after=Duration.days(1),
+            )
 
         table = dynamodb.Table(
             self,
@@ -191,6 +203,10 @@ class GraphifyMcpPlatformStack(Stack):
         # Read-only registry access: the merged-__all__ step queries enabled
         # repos; state transitions remain the completion Lambda's job.
         table.grant_read_data(build_project)
+        bucket.grant_read(build_project, "source-versions/*")
+        bucket.grant_put(build_project, "source-versions/*")
+        build_project.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:UpdateItem"], resources=[table.table_arn]))
         # Per-repo clone credentials under the graphify/ secret prefix.
         build_project.add_to_role_policy(
             iam.PolicyStatement(
@@ -378,6 +394,15 @@ class GraphifyMcpPlatformStack(Stack):
         image = ecr_assets.DockerImageAsset(
             self, "McpImage", directory="runtime", platform=ecr_assets.Platform.LINUX_ARM64
         )
+        # Management-only releases can retain an already verified runtime
+        # digest without rolling the always-warm hub or future repo tasks.
+        pinned_image = self.node.try_get_context("runtime_image_uri")
+        if pinned_image and not re.fullmatch(
+            r"[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/"
+            r"[A-Za-z0-9_./-]+@sha256:[a-f0-9]{64}", pinned_image
+        ):
+            raise ValueError("runtime_image_uri must be an ECR image pinned by sha256 digest")
+        image_uri = Fn.sub(pinned_image) if pinned_image else image.image_uri
 
         mcp_log_group = logs.LogGroup(
             self,
@@ -431,7 +456,8 @@ class GraphifyMcpPlatformStack(Stack):
         )
         hub_task.add_container(
             "mcp",
-            image=ecs.ContainerImage.from_docker_image_asset(image),
+            image=(ecs.ContainerImage.from_registry(image_uri) if pinned_image
+                   else ecs.ContainerImage.from_docker_image_asset(image)),
             logging=ecs.LogDrivers.aws_logs(stream_prefix="hub", log_group=mcp_log_group),
             port_mappings=[ecs.PortMapping(container_port=8000)],
             environment={
@@ -446,6 +472,8 @@ class GraphifyMcpPlatformStack(Stack):
                 "REPO_IDS": default_repo_id or "__all__",
             },
         )
+        if pinned_image:
+            image.repository.grant_pull(task_exec_role)
         hub_service = ecs.FargateService(
             self,
             "HubService",
@@ -620,6 +648,41 @@ class GraphifyMcpPlatformStack(Stack):
         # (REST, not HTTP API: usage plans / apiKeySource=AUTHORIZER and WAF
         # attachment are REST-only, and those drive per-key throttling.)
         # ------------------------------------------------------------------
+        group_layer = lambda_.LayerVersion(
+            self, "GroupSharedLayer", code=lambda_.Code.from_asset("lambdas/shared"),
+            compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
+            compatible_architectures=[lambda_.Architecture.ARM_64],
+            description="Versioned source group access and query helpers",
+        )
+        group_worker_name = f"{runtime_name}_group_worker"
+        group_worker = lambda_.Function(
+            self, "GroupWorkerFn", function_name=group_worker_name,
+            runtime=lambda_.Runtime.PYTHON_3_12, architecture=lambda_.Architecture.ARM_64,
+            handler="handler.handler", code=lambda_.Code.from_asset("lambdas/group_worker"),
+            layers=[group_layer], timeout=Duration.minutes(15), memory_size=2048,
+            ephemeral_storage_size=Size.gibibytes(1), reserved_concurrent_executions=2,
+            environment={"PLATFORM_TABLE": platform_table.table_name,
+                         "REGISTRY_TABLE": table.table_name, "GRAPH_BUCKET": bucket.bucket_name},
+        )
+        platform_table.grant_read_write_data(group_worker)
+        table.grant_read_data(group_worker)
+        bucket.grant_read(group_worker, "source-versions/*")
+        bucket.grant_delete(group_worker, "source-versions/*")
+        bucket.grant_read_write(group_worker, "groups/*")
+        group_worker.add_to_role_policy(iam.PolicyStatement(
+            actions=["bedrock:InvokeModel"], resources=[
+                "arn:aws:bedrock:*::foundation-model/anthropic.*",
+                f"arn:aws:bedrock:*:{self.account}:inference-profile/*anthropic*",
+            ]))
+        group_worker.add_to_role_policy(iam.PolicyStatement(
+            actions=["lambda:InvokeFunction"],
+            resources=[self.format_arn(service="lambda", resource="function",
+                                      resource_name=group_worker_name,
+                                      arn_format=ArnFormat.COLON_RESOURCE_NAME)]))
+        events.Rule(self, "GroupReconcileTick", schedule=events.Schedule.rate(Duration.minutes(5)),
+                    targets=[targets.LambdaFunction(group_worker,
+                        event=events.RuleTargetInput.from_object({"reconcile": True}))])
+
         authorizer_fn = lambda_.Function(
             self,
             "KeyAuthorizerFn",
@@ -627,6 +690,7 @@ class GraphifyMcpPlatformStack(Stack):
             architecture=lambda_.Architecture.ARM_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset("lambdas/authorizer"),
+            layers=[group_layer],
             timeout=Duration.seconds(10),
             memory_size=256,
             environment={
@@ -644,10 +708,11 @@ class GraphifyMcpPlatformStack(Stack):
             architecture=lambda_.Architecture.ARM_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset("lambdas/mcp_proxy"),
+            layers=[group_layer],
             # API Gateway cuts buffered integrations at 29s; the longer Lambda
             # timeout only covers the usage-counter writes after a slow call.
             timeout=Duration.seconds(60),
-            memory_size=256,
+            memory_size=1024,
             # In-VPC so it can reach the Fargate tasks over Cloud Map DNS.
             # Public subnets are fine (no NAT to pay for): the Lambda needs
             # only VPC-internal HTTP + DynamoDB via the gateway endpoint, and
@@ -662,9 +727,11 @@ class GraphifyMcpPlatformStack(Stack):
                 "HUB_HOST": hub_host,
                 "SERVICE_DNS_SUFFIX": service_dns_suffix,
                 "SERVICE_PORT": "8000",
+                "GRAPH_BUCKET": bucket.bucket_name,
             },
         )
-        platform_table.grant_write_data(proxy_fn)
+        platform_table.grant_read_write_data(proxy_fn)
+        bucket.grant_read(proxy_fn, "groups/*")
         table.grant_read_data(proxy_fn)
 
         data_api = apigw.RestApi(
@@ -766,8 +833,9 @@ class GraphifyMcpPlatformStack(Stack):
             architecture=lambda_.Architecture.ARM_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset("lambdas/platform_api"),
+            layers=[group_layer],
             timeout=Duration.seconds(28),  # HTTP API integration ceiling is 30s
-            memory_size=512,
+            memory_size=1024,
             environment={
                 "PLATFORM_TABLE": platform_table.table_name,
                 "REGISTRY_TABLE": table.table_name,
@@ -782,17 +850,21 @@ class GraphifyMcpPlatformStack(Stack):
                 "MCP_PROXY_FN": proxy_fn.function_name,
                 # Per-repo Fargate service creation (lambdas/platform_api/runtimes.py).
                 "ECS_CLUSTER": cluster.cluster_name,
-                "TASK_IMAGE": image.image_uri,
+                "TASK_IMAGE": image_uri,
                 "TASK_ROLE_ARN": task_role.role_arn,
                 "TASK_EXEC_ROLE_ARN": task_exec_role.role_arn,
                 "TASK_SUBNETS": public_subnet_ids,
                 "TASK_SECURITY_GROUP": service_sg.security_group_id,
                 "CLOUDMAP_NAMESPACE_ID": namespace.namespace_id,
                 "SERVICE_LOG_GROUP": mcp_log_group.log_group_name,
+                "GROUP_WORKER_FN": group_worker.function_name,
             },
         )
         platform_table.grant_read_write_data(platform_fn)
         table.grant_read_write_data(platform_fn)
+        group_worker.grant_invoke(platform_fn)
+        bucket.grant_read(platform_fn, "groups/*")
+        bucket.grant_read(platform_fn, "source-versions/*")
         # files-source registration drops the uploads/<repo_id>/ folder marker;
         # the upload-management routes list, presign (POST policy signed by
         # this role's put permission) and delete objects under uploads/*.
@@ -812,6 +884,20 @@ class GraphifyMcpPlatformStack(Stack):
         platform_fn.add_to_role_policy(
             iam.PolicyStatement(actions=["codebuild:StartBuild"], resources=[build_project.project_arn])
         )
+        # Diagnostics reads only this project's builds and their CloudWatch
+        # streams. The handler additionally binds each build to the granted
+        # source via REPO_ID before reading any logs.
+        platform_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["codebuild:BatchGetBuilds"],
+            # BatchGetBuilds authorizes against the PROJECT ARN, not build/*.
+            resources=[build_project.project_arn],
+        ))
+        platform_fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["logs:GetLogEvents"],
+            resources=[self.format_arn(service="logs", resource="log-group",
+                                       resource_name=f"/aws/codebuild/{build_project.project_name}:log-stream:*",
+                                       arn_format=ArnFormat.COLON_RESOURCE_NAME)],
+        ))
         platform_fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=[
@@ -901,12 +987,11 @@ class GraphifyMcpPlatformStack(Stack):
         # purely for packaging — it carries the vendored anthropic SDK (~18MB)
         # that nothing else needs.
         # ------------------------------------------------------------------
-        # Claude models >= Sonnet 4.6 that run under the account's DEFAULT
-        # Bedrock data-retention mode. The Claude 5 family (Fable/Sonnet/Opus 5)
-        # is deliberately excluded: those require data_retention_mode
-        # provider_data_share (prompts/outputs shared with the provider), a
-        # governance opt-in this account has not made. If it is later enabled,
-        # add "global.anthropic.claude-sonnet-5" / "…-opus-5" / "…-fable-5".
+        # Conservative model allowlist, independent of account retention
+        # configuration. Models such as Fable 5.1 require an explicit
+        # aws_review opt-in (AWS retention and human review, within AWS).
+        # Stack deployment must not opt in automatically. Add further models
+        # only after confirming their availability and approved retention mode.
         playground_models = [
             "global.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-6-v1",
@@ -920,6 +1005,7 @@ class GraphifyMcpPlatformStack(Stack):
             architecture=lambda_.Architecture.ARM_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset("lambdas/playground"),
+            layers=[group_layer],
             timeout=Duration.seconds(28),  # HTTP API integration ceiling is 30s
             memory_size=512,
             environment={
@@ -1077,11 +1163,20 @@ class GraphifyMcpPlatformStack(Stack):
         # win) purely so they can carry their own RouteSettings throttle below
         # — same Lambda, same authorizer.
         throttled_routes = []
-        for gx_path in ("/repos/{repoId}/graph", "/catalog/{repoId}/graph"):
+        for gx_path in ("/repos/{repoId}/graph", "/catalog/{repoId}/graph", "/repos/{repoId}/build"):
             throttled_routes += mgmt_api.add_routes(
                 path=gx_path,
                 methods=[apigwv2.HttpMethod.GET],
                 integration=platform_integration,
+                authorizer=jwt_authorizer,
+            )
+        for group_path, group_method in (
+            ("/groups/{groupId}/graph", apigwv2.HttpMethod.GET),
+            ("/groups/{groupId}/source", apigwv2.HttpMethod.POST),
+            ("/groups/{groupId}/rebuild", apigwv2.HttpMethod.POST),
+        ):
+            throttled_routes += mgmt_api.add_routes(
+                path=group_path, methods=[group_method], integration=platform_integration,
                 authorizer=jwt_authorizer,
             )
         # Exact-path routes win over {proxy+}, so the playground peels its two
@@ -1108,6 +1203,10 @@ class GraphifyMcpPlatformStack(Stack):
             # the per-user daily cap lives in the handler.
             "GET /repos/{repoId}/graph": {"ThrottlingRateLimit": 5, "ThrottlingBurstLimit": 10},
             "GET /catalog/{repoId}/graph": {"ThrottlingRateLimit": 5, "ThrottlingBurstLimit": 10},
+            "GET /repos/{repoId}/build": {"ThrottlingRateLimit": 5, "ThrottlingBurstLimit": 10},
+            "GET /groups/{groupId}/graph": {"ThrottlingRateLimit": 5, "ThrottlingBurstLimit": 10},
+            "POST /groups/{groupId}/source": {"ThrottlingRateLimit": 5, "ThrottlingBurstLimit": 10},
+            "POST /groups/{groupId}/rebuild": {"ThrottlingRateLimit": 2, "ThrottlingBurstLimit": 4},
         })
         # RouteSettings is validated against EXISTING routes: the stage update
         # must run after the routes it names are created, or the deploy fails
@@ -1161,12 +1260,13 @@ class GraphifyMcpPlatformStack(Stack):
         CfnOutput(self, "GraphBucketName", value=bucket.bucket_name)
         CfnOutput(self, "RepoRegistryTable", value=table.table_name)
         CfnOutput(self, "GraphBuildProject", value=build_project.project_name)
+        CfnOutput(self, "GroupWorkerFunction", value=group_worker.function_name)
         CfnOutput(self, "PollerFunction", value=poller.function_name)
         CfnOutput(self, "WebhookUrl", value=webhook_api.api_endpoint + "/")
         CfnOutput(self, "WebhookSecretArn", value=webhook_secret.secret_arn)
         # For dynamic per-repo Fargate service creation (scripts + platform API).
         CfnOutput(self, "EcsClusterName", value=cluster.cluster_name)
-        CfnOutput(self, "TaskImageUri", value=image.image_uri)
+        CfnOutput(self, "TaskImageUri", value=image_uri)
         CfnOutput(self, "TaskRoleArn", value=task_role.role_arn)
         CfnOutput(self, "TaskExecRoleArn", value=task_exec_role.role_arn)
         CfnOutput(self, "TaskSubnets", value=public_subnet_ids)

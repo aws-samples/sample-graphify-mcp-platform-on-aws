@@ -36,6 +36,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "vendor"))
 
 import boto3  # noqa: E402  (Lambda-provided)
+import group_access
 from anthropic import AnthropicBedrock  # noqa: E402  (vendored)
 
 REGION = os.environ["AWS_REGION"]
@@ -129,6 +130,12 @@ def _require_server(body: dict, sub: str) -> str:
         raise ApiError(400, "server_id is invalid")
     if server_id == "all":
         return server_id  # hub: merged PUBLIC graph, open to every console user
+    if group_access.is_group_id(server_id):
+        try:
+            group_access.require_access(_ddb, PLATFORM_TABLE, REGISTRY_TABLE, sub, server_id)
+        except group_access.GroupError as exc:
+            raise ApiError(exc.status, str(exc)) from None
+        return server_id
     reg = _ddb.get_item(TableName=REGISTRY_TABLE, Key={"repo_id": {"S": server_id}}).get("Item")
     if not reg or reg.get("enabled", {}).get("S") != "1":
         raise ApiError(404, f"unknown MCP server '{server_id}' (not registered or disabled)")

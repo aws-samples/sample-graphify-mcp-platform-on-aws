@@ -28,6 +28,10 @@ from botocore.config import Config
 import gitreg
 import keys as keysmod
 import runtimes
+import build_diagnostics
+import group_access
+import group_query
+import groups_api
 
 REGION = os.environ["AWS_REGION"]
 PLATFORM_TABLE = os.environ["PLATFORM_TABLE"]
@@ -41,6 +45,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_SECRET_ARN = os.environ.get("WEBHOOK_SECRET_ARN", "")
 # In-VPC data-plane proxy, invoked directly for the console's source viewer.
 MCP_PROXY_FN = os.environ.get("MCP_PROXY_FN", "")
+GROUP_WORKER_FN = os.environ.get("GROUP_WORKER_FN", "")
 # Per-repo Fargate service creation (runtimes.ensure_repo_runtime).
 RUNTIME_ENV = {
     "ECS_CLUSTER": os.environ["ECS_CLUSTER"],
@@ -77,6 +82,10 @@ _ddbc = boto3.client("dynamodb", region_name=REGION)
 _platform = _ddb.Table(PLATFORM_TABLE)
 _registry = _ddb.Table(REGISTRY_TABLE)
 _codebuild = boto3.client("codebuild", region_name=REGION)
+_build_info = boto3.client("codebuild", region_name=REGION, config=Config(
+    connect_timeout=3, read_timeout=6, retries={"total_max_attempts": 1}))
+_build_logs = boto3.client("logs", region_name=REGION, config=Config(
+    connect_timeout=3, read_timeout=6, retries={"total_max_attempts": 1}))
 _secrets = boto3.client("secretsmanager", region_name=REGION)
 _cognito = boto3.client("cognito-idp", region_name=REGION)
 _lambda = boto3.client("lambda", region_name=REGION, config=Config(read_timeout=27, retries={"max_attempts": 0}))
@@ -251,6 +260,9 @@ def _apply_llm_options(item: dict, body: dict) -> None:
 def _repo_view(item: dict) -> dict:
     return {
         "repo_id": item["repo_id"],
+        "description": item.get("description", ""),
+        "active_source_version": item.get("active_source_version", ""),
+        "group_version_error": item.get("group_version_error", ""),
         "source_type": item.get("source_type", "git"),
         "git_url": item.get("git_url", ""),
         "ref": item.get("ref", ""),
@@ -275,6 +287,10 @@ def _repo_view(item: dict) -> dict:
         "llm_corpus_cap_mb": int(item.get("llm_corpus_cap_mb", 0) or 0) or LLM_CORPUS_CAP_MB_DEFAULT,
         "created_at": item.get("created_at", ""),
         "runtime_id": item.get("runtime_id", ""),
+        "dedicated_runtime": item.get("dedicated_runtime", "1") != "0",
+        "connection_available": (item.get("enabled") == "1"
+                                 and item.get("dedicated_runtime", "1") != "0"
+                                 and bool(item.get("runtime_id"))),
         "server_id": item["repo_id"],
         "server_name": item.get("server_name", ""),
         "mcp_url": f"{MCP_BASE_URL}/mcp/{item['repo_id']}",
@@ -302,6 +318,7 @@ def _start_build(item: dict, head_sha: str) -> dict:
         {"name": "LLM_IMAGES", "value": "1" if item.get("llm_images") == "1" else "0", "type": "PLAINTEXT"},
         {"name": "LLM_MODEL", "value": item.get("llm_model", ""), "type": "PLAINTEXT"},
         {"name": "LLM_CORPUS_CAP_MB", "value": str(item.get("llm_corpus_cap_mb", "") or ""), "type": "PLAINTEXT"},
+        {"name": "FORCE_SOURCE_VERSION", "value": "1" if item.get("force_source_version") else "0", "type": "PLAINTEXT"},
     ]
     if item.get("source_type") == "url":
         env += [
@@ -482,6 +499,7 @@ def _register_files_repo(sub: str, body: dict) -> dict:
     iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
     item = {
         "repo_id": repo_id, "git_url": s3_url, "provider": "s3", "ref": "",
+        "description": groups_api.validate_source_description(body.get("description", "")),
         "source_type": "files",
         "enabled": "1", "trigger": "poll", "dedicated_runtime": "1",
         "graph_scope": requested_scope, "created_by_sub": sub, "subscriber_count": 1,
@@ -589,6 +607,7 @@ def _register_url_repo(sub: str, body: dict) -> dict:
     iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
     item = {
         "repo_id": repo_id, "git_url": url, "provider": "url", "ref": "",
+        "description": groups_api.validate_source_description(body.get("description", "")),
         "source_type": "url", "crawl_max_pages": max_pages,
         "enabled": "1", "trigger": "poll", "dedicated_runtime": "1",
         "graph_scope": requested_scope, "created_by_sub": sub, "subscriber_count": 1,
@@ -702,6 +721,27 @@ def get_repo(event, ident, params):
     return _resp(200, view)
 
 
+def get_repo_build(event, ident, params):
+    """Latest build diagnostics; the source grant precedes every AWS read."""
+    repo_id = params["repoId"]
+    _require_grant(ident["sub"], repo_id)
+    item = _registry.get_item(Key={"repo_id": repo_id}, ConsistentRead=True).get("Item")
+    if not item or item.get("enabled") != "1":
+        raise ApiError(404, "repo not found or disabled")
+    query = event.get("queryStringParameters") or {}
+    if set(query) - {"next_token", "build_id"}:
+        raise ApiError(400, "only build_id and next_token are accepted")
+    try:
+        out = build_diagnostics.describe_build(
+            item, _build_info, _build_logs, PROJECT_NAME,
+            next_token=query.get("next_token") or "",
+            requested_build_id=query.get("build_id") or "",
+        )
+    except build_diagnostics.DiagnosticsError as exc:
+        raise ApiError(exc.status, str(exc)) from None
+    return _resp(200, out)
+
+
 def register_repo(event, ident, _params):
     sub = ident["sub"]
     body = _body(event)
@@ -801,6 +841,7 @@ def register_repo(event, ident, _params):
         raise ApiError(400, f"poll_interval must be 60..{URL_POLL_MAX} seconds")
     item = {
         "repo_id": repo_id, "git_url": git_url, "provider": provider, "ref": ref,
+        "description": groups_api.validate_source_description(body.get("description", "")),
         "enabled": "1", "trigger": trigger, "dedicated_runtime": "1",
         "graph_scope": "private" if private else "public",
         "created_by_sub": sub, "subscriber_count": 1,
@@ -1186,7 +1227,9 @@ def rebuild_repo(event, ident, params):
             _, head_sha = gitreg.resolve_ref_and_sha(item["git_url"], item["ref"], item.get("provider", "github"), token)
         except Exception as exc:
             raise ApiError(422, f"could not resolve head sha: {exc}") from None
-    build = _start_build(dict(item), head_sha)
+    # A manual rebuild also repairs missing/corrupt immutable artifacts,
+    # including URL sources whose crawled content did not change.
+    build = _start_build({**item, "force_source_version": True}, head_sha)
     out = {"repo_id": repo_id, "build_id": build["id"], "target_sha": head_sha[:12]}
     # Rebuild doubles as service repair: a registration whose service creation
     # failed (or was skipped) gets its dedicated MCP server here.
@@ -1967,6 +2010,25 @@ def list_servers(event, ident, _params):
             "manageable": _can_manage(item, ident),
             "mcp_url": f"{MCP_BASE_URL}/mcp/{rid}",
             "runtime_status": runtimes.runtime_status(item["runtime_id"]) if item.get("runtime_id") else "NONE",
+            "dedicated_runtime": item.get("dedicated_runtime", "1") != "0",
+            "connection_available": (item.get("enabled") == "1"
+                                     and item.get("dedicated_runtime", "1") != "0"
+                                     and bool(item.get("runtime_id"))),
+        })
+    for group in groups_api.list_for_user(
+        ident, ddb=_ddbc, platform_table=PLATFORM_TABLE,
+        registry_table=REGISTRY_TABLE, mcp_base=MCP_BASE_URL,
+    ):
+        if group.get("access_recovery") or group.get("stale") or not group.get("data_ready"):
+            continue
+        servers.append({
+            "server_id": group["group_id"], "kind": "group", "source_type": "group",
+            "name": group["name"], "server_name": f"graphify-group-{group['group_id'][4:16]}",
+            "description": group.get("description", ""),
+            "graph_scope": "private", "build_status": group.get("status", ""),
+            "runtime_status": "ON_DEMAND", "mcp_url": f"{MCP_BASE_URL}/mcp/{group['group_id']}",
+            "data_ready": True, "stale": False,
+            "connection_available": True,
         })
     return _resp(200, {"servers": servers})
 
@@ -2012,6 +2074,10 @@ def create_key(event, ident, _params):
         scope_type, scope_ids = "ALL", []
     elif isinstance(scope, list) and scope:
         granted = {g["sk"].removeprefix("REPO#") for g in _grants(sub, "REPO#")} | {"all"}
+        for sid in scope:
+            if group_access.is_group_id(sid):
+                group_access.require_access(_ddbc, PLATFORM_TABLE, REGISTRY_TABLE, sub, sid)
+                granted.add(sid)
         bad = [s for s in scope if s not in granted]
         if bad:
             raise ApiError(403, f"scope contains servers you have no grant for: {bad}")
@@ -2366,15 +2432,74 @@ def search_users(event, ident, _params):
     ]})
 
 
+def set_source_description(event, ident, params):
+    rid = params["repoId"]
+    _require_grant(ident["sub"], rid)
+    item = _registry.get_item(Key={"repo_id": rid}, ConsistentRead=True).get("Item")
+    if not item or item.get("enabled") != "1":
+        raise ApiError(404, "source not found")
+    if not _can_manage(item, ident):
+        raise ApiError(403, "only the source owner may edit its shared description")
+    description = groups_api.validate_source_description(_body(event).get("description", ""))
+    if description == item.get("description", ""):
+        return _resp(200, {"repo_id": rid, "description": description, "changed": False})
+    values = {":enabled": "1", ":description": description, ":one": 1}
+    condition = "enabled = :enabled"
+    if item.get("created_by_sub"):
+        condition += " AND created_by_sub = :owner"
+        values[":owner"] = item["created_by_sub"]
+    else:
+        condition += " AND attribute_not_exists(created_by_sub)"
+    _registry.update_item(
+        Key={"repo_id": rid},
+        ConditionExpression=condition,
+        UpdateExpression="SET description = :description ADD description_version :one",
+        ExpressionAttributeValues=values,
+    )
+    return _resp(200, {"repo_id": rid, "description": description, "changed": True})
+
+
+def group_routes(event, ident, method, path):
+    match = re.fullmatch(r"/groups/(grp_[0-9a-f]{32})/(graph|source)", path)
+    args = (_ddbc, PLATFORM_TABLE, REGISTRY_TABLE, _s3, GRAPH_BUCKET, ident["sub"])
+    if match and method == "GET" and match[2] == "graph":
+        q = event.get("queryStringParameters") or {}
+        try:
+            offset, limit = int(q.get("offset", 0)), int(q.get("limit", 500))
+        except (ValueError, TypeError):
+            raise ApiError(400, "offset and limit must be integers") from None
+        return _resp(200, group_query.get_graph_page(
+            *args, match[1], kind=q.get("kind", "nodes"), offset=offset,
+            limit=limit, group_version=q.get("group_version", "")))
+    if match and method == "POST" and match[2] == "source":
+        body = _body(event)
+        if set(body) - {"group_version", "source_id", "file", "start_line", "end_line"}:
+            raise ApiError(400, "unsupported group source argument")
+        if not body.get("group_version"):
+            raise ApiError(400, "group_version is required for source reads")
+        return _resp(200, group_query.get_source(
+            *args, match[1], source_id=body.get("source_id"), file=body.get("file"),
+            start_line=body.get("start_line", 1), end_line=body.get("end_line"),
+            group_version=body["group_version"]))
+    status, body = groups_api.handle(
+        event, ident, method, path, platform=_platform, registry=_registry,
+        ddb=_ddbc, s3=_s3, lambda_client=_lambda, worker_fn=GROUP_WORKER_FN,
+        platform_table=PLATFORM_TABLE, registry_table=REGISTRY_TABLE, bucket=GRAPH_BUCKET,
+        mcp_base=MCP_BASE_URL, cognito=_cognito, user_pool_id=USER_POOL_ID)
+    return _resp(status, body)
+
+
 ROUTES = [
     ("GET", re.compile(r"^/me$"), get_me),
     ("GET", re.compile(r"^/repos$"), list_repos),
     ("POST", re.compile(r"^/repos$"), register_repo),
     ("GET", re.compile(r"^/repos/(?P<repoId>[^/]+)$"), get_repo),
+    ("GET", re.compile(r"^/repos/(?P<repoId>[^/]+)/build$"), get_repo_build),
     ("DELETE", re.compile(r"^/repos/(?P<repoId>[^/]+)$"), delete_repo),
     ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/rebuild$"), rebuild_repo),
     ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/scope$"), change_scope),
     ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/name$"), set_server_name),
+    ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/description$"), set_source_description),
     ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/crawl$"), set_crawl_config),
     ("POST", re.compile(r"^/repos/(?P<repoId>[^/]+)/llm$"), set_llm_extract),
     ("GET", re.compile(r"^/repos/(?P<repoId>[^/]+)/graph$"), get_graph_viz),
@@ -2408,6 +2533,8 @@ def handler(event: dict, _ctx) -> dict:
     try:
         ident = _claims(event)
         _reject_if_deleted(ident["sub"])
+        if path == "/groups" or path.startswith("/groups/"):
+            return group_routes(event, ident, method, path)
         for m, pattern, fn in ROUTES:
             if m != method:
                 continue
@@ -2416,6 +2543,8 @@ def handler(event: dict, _ctx) -> dict:
                 return fn(event, ident, match.groupdict())
         raise ApiError(404, f"no route: {method} {path}")
     except ApiError as exc:
+        return _resp(exc.status, {"error": str(exc)})
+    except group_access.GroupError as exc:
         return _resp(exc.status, {"error": str(exc)})
     except Exception as exc:  # noqa: BLE001 — one edge; surface a structured 500
         print(f"UNHANDLED {method} {path}: {type(exc).__name__}: {exc}")

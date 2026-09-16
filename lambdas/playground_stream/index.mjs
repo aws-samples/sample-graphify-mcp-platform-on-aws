@@ -167,6 +167,19 @@ async function budgetRecord(sub, day, tokens) {
 async function authorizeServer(sub, serverId) {
   if (!SERVER_ID_RE.test(serverId)) throw new ApiError(400, 'server_id is invalid');
   if (serverId === 'all') return;
+  if (/^grp_[0-9a-f]{32}$/.test(serverId)) {
+    // Reuse the Python policy in the proxy. Actual calls re-check all grants.
+    const check = await proxyInvoke(serverId, sub,
+      {jsonrpc: '2.0', id: 'group-access', method: 'ping'}, 15000);
+    if (check.status !== 200) throw new ApiError(check.status || 502, 'Group or source access is unavailable');
+    let rpc;
+    try { rpc = JSON.parse(check.text); } catch { throw new ApiError(502, 'Invalid group access response'); }
+    if (rpc?.jsonrpc !== '2.0' || rpc?.id !== 'group-access' || rpc?.error
+        || !rpc?.result || typeof rpc.result !== 'object' || rpc.result.isError) {
+      throw new ApiError(403, 'Group or source access is unavailable');
+    }
+    return;
+  }
   const reg = (await ddb.send(new GetItemCommand({ TableName: REGISTRY_TABLE, Key: { repo_id: { S: serverId } } }))).Item;
   if (!reg || reg.enabled?.S !== '1') throw new ApiError(404, `unknown MCP server '${serverId}' (not registered or disabled)`);
   const grant = (await ddb.send(new GetItemCommand({

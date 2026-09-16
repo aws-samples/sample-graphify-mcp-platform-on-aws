@@ -40,7 +40,7 @@ from common import STACK_NAME, mcp_server_entry  # noqa: E402
 PORT = int(os.environ.get("SETUP_PORT", "8787"))
 DEFAULT_REGION = "ap-northeast-2"
 RUNTIME_NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{0,47}")
-CDK = ["npx", "-y", "aws-cdk@latest"]
+CDK = ["npx", "-y", "aws-cdk@2.1139.0"]
 
 app = FastAPI()
 

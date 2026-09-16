@@ -20,6 +20,7 @@ import time
 import zlib
 
 import boto3
+import group_access
 
 TABLE_NAME = os.environ["PLATFORM_TABLE"]
 REGISTRY_TABLE = os.environ["REGISTRY_TABLE"]
@@ -127,7 +128,12 @@ def handler(event: dict, _ctx) -> dict:
     # valid key (they are already searchable through the hub). This closes
     # the cross-tenant read that key-scope alone does not: an ALL-scope key
     # otherwise matched POST/mcp/* for every tenant's private runtime.
-    if server_id != "all":
+    if group_access.is_group_id(server_id):
+        try:
+            group_access.require_access(_ddb, TABLE_NAME, REGISTRY_TABLE, owner_sub, server_id)
+        except group_access.GroupError:
+            return deny("no_access_to_group_sources")
+    elif server_id != "all":
         # ConsistentRead so a repo/grant written milliseconds earlier (console
         # register -> immediate connect) is visible, not a stale replica miss.
         reg = _ddb.get_item(

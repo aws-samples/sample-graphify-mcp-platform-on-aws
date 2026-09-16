@@ -71,9 +71,21 @@ Your usage this month (per day and per server), the MCP servers you provide and 
 
 ### Sources — register, subscribe, and the public catalog
 
-Register a **git repository** (any smart-HTTP host: GitHub, GitLab, Bitbucket, Gitea, GitHub Enterprise…), a **docs-site URL** (sitemap-first crawler, robots.txt honored), or a **file folder** (an S3 upload prefix you `aws s3 sync` into; PDF/Word/Excel are converted to Markdown at build time). Choose public (pooled, hub-merged) or private (siloed). The **public server catalog** shows every public source on the platform with its type, owner, build status and subscriber count — subscribe with one click. Each source row carries its build settings: rebuild, rename, members (private), crawl settings (docs sites), file upload panel (file folders), and the **AI extraction settings** panel — Bedrock model, embedded-image extraction, corpus cap. Every table in the console is paginated.
+Register a **git repository** (any smart-HTTP host: GitHub, GitLab, Bitbucket, Gitea, GitHub Enterprise…), a **docs-site URL** (sitemap-first crawler, robots.txt honored), or a **file folder** (an S3 upload prefix you `aws s3 sync` into; PDF/Word/Excel are converted to Markdown at build time). Choose public (pooled, hub-merged) or private (siloed). The **public server catalog** shows every public source on the platform with its type, owner, build status and subscriber count — subscribe with one click. Each source row carries its build settings: rebuild, rename, members (private), crawl settings (docs sites), file management (file folders), and **AI extraction settings** for the Bedrock model, embedded-image extraction and corpus cap. Registration, settings, member/file management, key issuance and invitations open in shared task modals, keeping pages focused on their lists. Every table in the console is paginated.
+
+**Build details / logs** opens the latest build's phases, failure messages and CloudWatch logs inside the console. Review suggested checks, open the source's file or AI extraction settings, then rebuild. Logs load on demand with earlier-page navigation; missing logs and read-permission failures are shown explicitly. See [build diagnostics](docs/build-diagnostics.md).
 
 ![Sources](docs/screenshots/repos.en.png)
+
+### Source groups — connect code and project documents
+
+Group frontend/backend repositories with planning and QA sources. Add source
+roles and descriptions, build cross-source relations, then inspect both source
+quotes or query the group through MCP. Explicit references are available
+without another model call; optional Claude analysis labels inferred relations
+and reports token usage. Groups use on-demand Lambda queries, with no
+per-group Fargate service. See [source groups](docs/source-groups.md) for access,
+versioning, limits and cost controls.
 
 ### MCP servers — per-source endpoints ready to paste
 

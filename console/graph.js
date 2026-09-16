@@ -3,14 +3,14 @@
  * Renders a source's knowledge graph with sigma.js v3 (WebGL) over a
  * graphology model. Data comes from GET /repos/{id}/graph (or
  * /catalog/{id}/graph for public previews): a presigned S3 URL to the build's
- * compact viz bundle — columnar nodes/edges with a layout PRECOMPUTED at build
+ * compact viz bundle, columnar nodes/edges with a layout PRECOMPUTED at build
  * time (cdk/build_scripts/make_viz.py), so nothing moves in the browser and
  * the picture is identical on every visit. Builds older than make_viz.py fall
  * back to the raw graph.json (size-capped) with a client-side circlepack.
  *
  * Views: a community meta-graph (default above ~3k nodes) that drills down
  * into node-level views (one community, an ego network, or everything), with
- * a breadcrumb back. Filters never move nodes — they rebuild the view graph
+ * a breadcrumb back. Filters never move nodes; they rebuild the view graph
  * (sigma's `hidden` still costs a full buffer refill, per measurement), and
  * hover/selection/path highlights are reducers over a partial refresh.
  *
@@ -30,6 +30,7 @@ const GX_I18N = {
     "gx.load": "불러오기", "gx.search.ph": "항목/파일 이름 검색 ( / )",
     "gx.view.communities": "연관 그룹", "gx.view.full": "모든 항목",
     "gx.fit": "화면에 맞추기 (F)", "gx.labels": "이름 표시/숨김 (L)", "gx.png": "이미지 저장", "gx.fullscreen": "전체 화면 (Esc로 종료)",
+    "gx.zoom.in": "확대 (+)", "gx.zoom.out": "축소 (-)", "gx.search.results": "항목 검색 결과", "gx.legend.search": "범례 검색", "gx.view.select": "그래프 보기 단계",
     "gx.filters": "보기 설정", "gx.color": "색으로 구분", "gx.color.community": "연관 그룹", "gx.color.type": "항목 종류",
     "gx.color.dir": "최상위 폴더", "gx.color.repo": "레포",
     "gx.types": "항목 종류", "gx.relations": "연결 종류", "gx.repos": "레포", "gx.mindeg": "최소 연결 수",
@@ -67,7 +68,7 @@ const GX_I18N = {
     "gx.ins.size": "항목 수", "gx.ins.dir": "주요 폴더", "gx.ins.hubs": "중심 항목", "gx.ins.linked": "연결된 연관 그룹",
     "gx.community.n": "연관 그룹 #{n}", "gx.src.pick": "그래프를 볼 소스",
     "gx.code.title": "소스 코드", "gx.code.view": "소스 보기", "gx.code.auto": "항목을 선택하면 자동으로 소스 보기", "gx.code.up": "▲ 위 40줄", "gx.code.down": "▼ 아래 40줄", "gx.code.loading": "소스 불러오는 중…",
-    "gx.code.lines": "{a}–{b}줄 / 전체 {n}줄", "gx.code.copy": "코드 복사", "gx.code.copied": "코드를 복사했습니다",
+    "gx.code.lines": "{a}-{b}줄 / 전체 {n}줄", "gx.code.copy": "코드 복사", "gx.code.copied": "코드를 복사했습니다",
     "gx.code.nofile": "이 항목에는 파일 정보가 없습니다.", "gx.code.err": "소스를 읽지 못했습니다",
     "gx.code.hubnote": "허브 그래프의 항목은 원본 레포 서버({repo})에서 읽습니다.",
     "gx.code.pageonly": "이 항목의 위치는 페이지({page})로만 기록되어 파일 처음부터 표시합니다. 소스를 재빌드하면 해당 페이지 위치로 이동합니다.",
@@ -91,11 +92,35 @@ const GX_I18N = {
     "gx.toobig.hub": "허브 병합 그래프({size})에는 아직 시각화 데이터가 없습니다. 어느 소스든 다음 빌드가 끝나면 함께 만들어집니다.",
     "gx.emptygraph.title": "그래프가 비어 있습니다", "gx.emptygraph.body": "이 빌드에는 항목이 없습니다 (public 소스가 없는 허브이거나, 추출된 심볼이 없는 소스).",
     "gx.inferred.short": "추론됨",
+    "gx.src.groups": "소스 그룹", "gx.group.sources": "소스", "gx.group.version": "그룹 버전", "gx.group.source": "원본 소스", "gx.group.sourceversion": "소스 버전",
+    "gx.group.sourceid": "소스 ID", "gx.group.connected": "연결된 소스",
+    "gx.group.connected.scope": "불러온 그룹 전체의 직접 연결입니다. 현재 보기와 필터에 숨겨진 항목 및 연결도 포함합니다. 이웃 수는 중복을 제외합니다.",
+    "gx.group.connected.counts": "이웃 항목 {n}개, 연결 {e}개",
+    "gx.group.connected.empty": "직접 연결된 항목이 없습니다.",
+    "gx.group.connected.loops": "자기 자신으로 향하는 연결 {n}개",
+    "gx.group.connected.loopnote": "자기 자신은 이웃 수에서 제외합니다. 자기 자신으로 향하는 연결은 연결 수에 한 번, 나감과 들어옴에 각각 한 번 집계합니다.",
+    "gx.group.edges.cross": "소스 간 연결", "gx.group.edges.same": "같은 소스 안의 연결",
+    "gx.group.edges.hint": "소스 간 연결은 출발 소스의 색입니다. 추론된 연결은 더 가늘고 흐립니다. 선택과 경로 강조 색이 우선합니다.",
+    "gx.group.pending": "그룹 그래프를 준비 중입니다",
+    "gx.group.pending.body": "내 소스에서 그룹 상태와 포함된 소스의 빌드를 확인하세요. 그룹 빌드가 준비되면 여기에서 그래프를 볼 수 있습니다. 상태: {s}",
+    "gx.group.stale": "그룹을 다시 빌드해야 합니다",
+    "gx.group.stale.body": "소스 또는 그룹 구성이 바뀌었습니다. 내 소스에서 그룹을 다시 빌드한 뒤 불러오세요.",
+    "gx.group.denied": "이 그룹에 접근할 수 없습니다",
+    "gx.group.denied.body": "그룹이 삭제되었거나 그룹 또는 원본 소스에 대한 접근 권한이 바뀌었습니다. 내 소스에서 접근 가능한 그룹을 확인하세요.",
+    "gx.group.invalid": "그룹 응답의 버전 또는 페이지 정보가 일치하지 않습니다. 그룹을 다시 불러오세요.",
+    "gx.group.limit": "브라우저에서는 항목 50,000개, 연결 200,000개, 데이터 32 MiB까지 볼 수 있습니다. 더 작은 소스 그룹을 만들어 보세요.",
+    "gx.group.layout": "배치: 그룹의 항목과 연결을 브라우저에서 계산",
+    "gx.group.filtered": "원본 소스: {source}", "gx.group.clearfilter": "그룹 전체 보기",
+    "gx.group.hint": "소스별 원을 더블클릭해 항목과 연결을 살펴보세요. 항목의 소스 보기는 이 그룹 버전에 포함된 원본을 읽습니다.",
+    "gx.group.partial": "일부 데이터로 빌드된 그룹입니다. 내 소스의 그룹 상세에서 빌드 결과를 확인하세요.",
+    "gx.code.groupnote": "그룹 {group}의 버전 {version}에 포함된 원본 소스 {source}입니다.",
+    "gx.code.groupunavailable": "이 소스는 그룹에서 원본을 읽습니다. 현재 소스 버전이 포함된 접근 가능한 그룹이 준비되어 있지 않습니다. 내 소스에서 해당 소스를 포함한 그룹을 빌드하거나 그룹과 원본 소스의 접근 권한을 확인하세요.",
   },
   en: {
     "gx.load": "Load", "gx.search.ph": "Search nodes & files ( / )",
     "gx.view.communities": "Communities", "gx.view.full": "All nodes",
     "gx.fit": "Fit to view (F)", "gx.labels": "Toggle labels (L)", "gx.png": "PNG", "gx.fullscreen": "Fullscreen (Esc to exit)",
+    "gx.zoom.in": "Zoom in (+)", "gx.zoom.out": "Zoom out (-)", "gx.search.results": "Node search results", "gx.legend.search": "Search legend", "gx.view.select": "Graph view",
     "gx.filters": "Filters", "gx.color": "Color by", "gx.color.community": "Community", "gx.color.type": "Node type",
     "gx.color.dir": "Top-level folder", "gx.color.repo": "Repo",
     "gx.types": "Node types", "gx.relations": "Edge relations", "gx.repos": "Repos", "gx.mindeg": "Min degree",
@@ -133,7 +158,7 @@ const GX_I18N = {
     "gx.ins.size": "Nodes", "gx.ins.dir": "Main folder", "gx.ins.hubs": "Hub nodes", "gx.ins.linked": "Linked communities",
     "gx.community.n": "Community #{n}", "gx.src.pick": "Source to explore",
     "gx.code.title": "Source code", "gx.code.view": "View source", "gx.code.auto": "Load source automatically on select", "gx.code.up": "▲ 40 lines up", "gx.code.down": "▼ 40 lines down", "gx.code.loading": "Loading source…",
-    "gx.code.lines": "lines {a}–{b} of {n}", "gx.code.copy": "Copy code", "gx.code.copied": "Code copied",
+    "gx.code.lines": "lines {a}-{b} of {n}", "gx.code.copy": "Copy code", "gx.code.copied": "Code copied",
     "gx.code.nofile": "This node has no file information.", "gx.code.err": "Could not read the source",
     "gx.code.hubnote": "Hub nodes are read from their original repo server ({repo}).",
     "gx.code.pageonly": "This node only records a page reference ({page}), so the file is shown from the top. Rebuild the source to jump to that page.",
@@ -157,6 +182,29 @@ const GX_I18N = {
     "gx.toobig.hub": "The hub's merged graph ({size}) has no visualization bundle yet. It is generated together with the next build of any source.",
     "gx.inferred.short": "inferred",
     "gx.emptygraph.title": "The graph is empty", "gx.emptygraph.body": "This build has no nodes (a hub with no public sources, or a source with no extracted symbols).",
+    "gx.src.groups": "Source groups", "gx.group.sources": "Sources", "gx.group.version": "Group version", "gx.group.source": "Origin source", "gx.group.sourceversion": "Source version",
+    "gx.group.sourceid": "Source ID", "gx.group.connected": "Connected sources",
+    "gx.group.connected.scope": "Direct connections in the full loaded group graph, including nodes and edges hidden by the current view or filters. Neighbor counts exclude duplicates.",
+    "gx.group.connected.counts": "{n} unique neighbors, {e} edges",
+    "gx.group.connected.empty": "No direct connections.",
+    "gx.group.connected.loops": "{n} self-loops",
+    "gx.group.connected.loopnote": "The selected node is excluded from neighbor counts. Each self-loop counts as one edge and once in each direction.",
+    "gx.group.edges.cross": "Between sources", "gx.group.edges.same": "Within a source",
+    "gx.group.edges.hint": "Cross-source edges use the starting source's color. Inferred edges are thinner and lighter. Selection and path highlight colors take priority.",
+    "gx.group.pending": "The group graph is not ready",
+    "gx.group.pending.body": "Check the group and its source builds in My Sources. The graph becomes available when the group build is ready. Status: {s}",
+    "gx.group.stale": "Rebuild this source group",
+    "gx.group.stale.body": "A source or the group configuration has changed. Rebuild the group in My Sources, then load it again.",
+    "gx.group.denied": "This group is unavailable",
+    "gx.group.denied.body": "The group was deleted or access to the group or an origin source changed. Check the available groups in My Sources.",
+    "gx.group.invalid": "The group response has inconsistent version or pagination data. Load the group again.",
+    "gx.group.limit": "The browser supports up to 50,000 nodes, 200,000 links and 32 MiB of data. Create a smaller source group to explore.",
+    "gx.group.layout": "layout: group nodes and links arranged in-browser",
+    "gx.group.filtered": "Origin source: {source}", "gx.group.clearfilter": "Show the whole group",
+    "gx.group.hint": "Double-click a source bubble to explore its nodes and links. View source reads the origin snapshot included in this group version.",
+    "gx.group.partial": "This group was built with partial data. Check the build result in the group details in My Sources.",
+    "gx.code.groupnote": "Origin source {source}, from version {version} of group {group}.",
+    "gx.code.groupunavailable": "This source is read through a group. No accessible, ready group contains its current source version. Build a group containing this source in My Sources, or check access to the group and its origin sources.",
   },
 };
 // index.html declares `const I18N` at script top level: a global lexical
@@ -172,7 +220,7 @@ const tt = (k, vars) => {
   for (const [a, b] of Object.entries(vars || {})) s = s.split(`{${a}}`).join(String(b));
   return s;
 };
-// Like tt(), but returns DOM with each substituted value wrapped in <b> — for
+// Like tt(), but returns DOM with each substituted value wrapped in <b> for
 // the summary paragraph, where the numbers and names are what the eye needs.
 const richText = (k, vars) => {
   const frag = document.createDocumentFragment();
@@ -208,7 +256,7 @@ const dirLabel = (name) => (name === "(root)" ? (isKo() ? "(최상위)" : "(root
 
 /* ---------------- palettes ---------------- */
 // Qualitative ramp (readable on the console's near-white stage); rank-assigned
-// within the current view, never `id % n` — 652 communities would alias.
+// within the current view, never `id % n` (652 communities would alias).
 const PALETTE = ["#4F46E5", "#0D9488", "#D97706", "#DB2777", "#2563EB", "#65A30D", "#7C3AED", "#EA580C",
   "#0891B2", "#C026D3", "#16A34A", "#B45309", "#4338CA", "#E11D48", "#0EA5E9", "#84CC16"];
 const GREY = "#B6C0CE";
@@ -225,6 +273,8 @@ const PATH_COLOR = "#DB2777";
 const COMMUNITY_VIEW_THRESHOLD = 3000;   // node count above which the meta-graph is the entry view
 const RAW_MAX_NODES_FOR_LAYOUT = 60000;
 const MAX_BUNDLE_RAW_BYTES = 160 * 1024 * 1024;   // decoded JSON the tab is willing to parse
+const GROUP_MAX_NODES = 50000, GROUP_MAX_LINKS = 200000;
+const GROUP_MAX_BYTES = 32 * 1024 * 1024, GROUP_PAGE_BYTES = 1024 * 1024;
 
 /* ---------------- small helpers ---------------- */
 const $ = (id) => document.getElementById(id);
@@ -251,6 +301,27 @@ function topDir(path) {
   return i < 0 ? "(root)" : p.slice(0, i);
 }
 function safeFilename(s) { return String(s || "graph").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80); }
+const groupMetaFor = (id) => (S.groups || []).find((g) => g.group_id === id);
+const isGroupSource = (id) => !!groupMetaFor(id) || String(id).startsWith("grp_")
+  || (S.servers || []).some((s) => s.server_id === id && s.kind === "group");
+const groupSourceId = (s) => typeof s === "string" ? s : s?.source_id;
+const groupReady = (g) => !!g && !g.access_recovery && !g.stale && g.data_ready !== false
+  && ["READY", "PARTIAL"].includes(String(g.status).toUpperCase()) && !!g.active_version
+  && g.active_revision === g.revision;
+const groupDenied = (e) => [401, 403, 404, 410].includes(Number(e?.status));
+const groupInvalid = () => Object.assign(new Error(t("gx.group.invalid")), { status: 409 });
+const groupLevelKey = (repoKey, dirKey) => GX.M.groupKind === "repo" ? (GX.M.groupId ? "gx.group.sources" : repoKey) : dirKey;
+function sourceDisplayName(id, M = GX.M) {
+  if (M?.groupId === id) return M.groupName || id;
+  const group = groupMetaFor(id);
+  if (group) return group.name || id;
+  if (M?.groupId) {
+    const source = M.groupSources.find((s) => groupSourceId(s) === id);
+    const repo = (S.repos || []).find((r) => r.repo_id === id);
+    return repo?.server_name || source?.name || source?.server_name || id;
+  }
+  return typeof serverName === "function" ? serverName(id) : id;
+}
 
 /* ---------------- model ----------------
  * M: columnar arrays indexed by node index; adjacency as CSR; communities.
@@ -307,8 +378,8 @@ function finishModel(M) {
   }
   computeFootprints(M);
   // Top-level groups (repo on the hub, else top-level folder): the most
-  // human-readable first level — stable across rebuilds, few, nameable.
-  M.groupKind = M.r && M.repos.length > 1 ? "repo" : "dir";
+  // human-readable first level: stable across rebuilds, few, nameable.
+  M.groupKind = M.r && (M.groupId || M.repos.length > 1) ? "repo" : "dir";
   const gk = M.groupKind === "repo" ? M.r : M.d;
   const gnames = M.groupKind === "repo" ? M.repos : M.dirs;
   const gm = new Map();
@@ -316,7 +387,7 @@ function finishModel(M) {
   M.groups = [...gm.entries()].sort((a, b) => b[1].length - a[1].length).map(([k, members]) => ({
     k, members,
     // Hub repos read as their MCP server names (what users see everywhere else).
-    label: M.groupKind === "repo" ? (typeof serverName === "function" ? serverName(gnames[k]) : gnames[k]) : (gnames[k] || "(root)"),
+    label: M.groupKind === "repo" ? sourceDisplayName(gnames[k], M) : (gnames[k] || "(root)"),
     sub: M.groupKind === "repo" ? gnames[k] : "",
   }));
   M.groupByKey = new Map(M.groups.map((g) => [g.k, g]));
@@ -415,24 +486,28 @@ function fromBundle(b, srcId) {
 // Raw graph.json (networkx node_link_data) → the same model. No positions in
 // the file: circlepack by community (graphology-library) or a circular
 // fallback. Communities are derived here the way make_viz.py derives them.
-function fromRaw(g, srcId) {
+function fromRaw(g, srcId, groupMeta = null) {
   if (!g || !Array.isArray(g.nodes)) throw new Error("bad graph.json");
   const links = Array.isArray(g.links) ? g.links : Array.isArray(g.edges) ? g.edges : [];
   const rawNodes = g.nodes.filter((x) => x && typeof x === "object" && typeof x.id === "string");
+  // Group IDs and provenance identify immutable snapshots. Do not truncate
+  // identifiers, file paths or source labels while adapting them for the UI.
+  const value = (v, max) => groupMeta ? String(v ?? "") : clean(v, max);
   const n = rawNodes.length;
   const idIndex = new Map();
   rawNodes.forEach((x, i) => idIndex.set(x.id, i));
-  const tI = intern(rawNodes.map((x) => clean(x.file_type, 40)));
-  const kI = intern(rawNodes.map((x) => clean(x.node_kind, 40)));
-  const fI = intern(rawNodes.map((x) => clean(x.source_file, 512)));
-  const hasRepo = rawNodes.some((x) => typeof x.repo === "string");
-  const rI = hasRepo ? intern(rawNodes.map((x) => clean(x.repo, 200))) : null;
+  const tI = intern(rawNodes.map((x) => value(x.file_type, 40)));
+  const kI = intern(rawNodes.map((x) => value(x.node_kind, 40)));
+  const fI = intern(rawNodes.map((x) => value(x.source_file, 512)));
+  const hasRepo = !!groupMeta || rawNodes.some((x) => typeof x.repo === "string");
+  const rI = hasRepo ? intern(rawNodes.map((x) => value(groupMeta ? x.source_id : x.repo, 200))) : null;
   const es = [], et = [], erv = [], einf = [];
   for (const l of links) {
     if (!l || typeof l !== "object") continue;
     const s = idIndex.get(l.source), tg = idIndex.get(l.target);
     if (s === undefined || tg === undefined) continue;
-    es.push(s); et.push(tg); erv.push(clean(l.relation, 40)); einf.push(l.confidence === "INFERRED" ? 1 : 0);
+    es.push(s); et.push(tg); erv.push(value(l.relation, 40));
+    einf.push(l.confidence === "INFERRED" || (groupMeta && l.evidence_kind === "INFERRED") ? 1 : 0);
   }
   const rIn = intern(erv);
   const deg = new Int32Array(n);
@@ -448,20 +523,22 @@ function fromRaw(g, srcId) {
   rawNodes.forEach((x, i) => {
     const cid = Number.isInteger(x.community) ? x.community : -1;
     c[i] = cid;
-    if (!commName.has(cid)) commName.set(cid, clean(x.community_name, 120));
+    if (!commName.has(cid)) commName.set(cid, value(x.community_name, 120));
   });
   const M = {
     srcId, header: { generated_at: "", built_at_commit: clean(g.built_at_commit, 40), layout: null },
     n, e: es.length,
-    id: rawNodes.map((x) => clean(x.id, 512)),
-    label: rawNodes.map((x) => clean(x.label || x.id, 200)),
+    id: rawNodes.map((x) => value(x.id, 512)),
+    label: rawNodes.map((x) => value(groupMeta ? x.label : x.label || x.id, 200)),
     c, t: tI.idx, k: kI.idx, f: fI.idx,
-    loc: rawNodes.map((x) => clean(x.source_location, 40)),
+    loc: rawNodes.map((x) => value(x.source_location, 40)),
     deg, x: null, y: null, r: rI ? rI.idx : null,
     es: Int32Array.from(es), et: Int32Array.from(et), er: rIn.idx, einf: Int8Array.from(einf),
     types: tI.list, kinds: kI.list, relations: rIn.list, files: fI.list, repos: rI ? rI.list : [],
     communities: [], cedges: [], hyperedges: [],
     layoutSource: "client",
+    ...(groupMeta || {}),
+    ...(groupMeta ? { provenance: rawNodes, linkProvenance: links } : {}),
   };
   // communities: size, auto label, dominant dir, hubs
   const members = new Map();
@@ -499,6 +576,7 @@ function fromRaw(g, srcId) {
   }
   finishModel(M);
   layoutClient(M);
+  if (groupMeta) computeFootprints(M);
   return M;
 }
 // Client-side layout for the raw fallback: circlepack by community keeps the
@@ -557,8 +635,9 @@ const GX = {
   hovered: null, hoveredNbrs: null, selected: null, selectedNbrs: null,   // sigma node keys
   path: { a: null, b: null, nodes: null, edges: null },                 // node indices / sets of keys
   colorRank: new Map(), legendCats: [],
-  hoverRaf: 0, loading: false, loadSeq: 0, shown: false, libsError: "", pollTimer: 0,
-  code: { cache: new Map(), seq: 0, auto: true, range: null },
+  hoverRaf: 0, loading: false, loadSeq: 0, shown: false, resetPending: false, libsError: "", pollTimer: 0, loadController: null,
+  originSource: "",
+  code: { cache: new Map(), seq: 0, auto: true, range: null, controller: null },
   lang: typeof LANG === "undefined" ? "ko" : LANG,
 };
 const K = (i) => String(i);                 // node index -> sigma key
@@ -590,7 +669,7 @@ function catLabel(cat) {
   switch (GX.colorBy) {
     case "type": return glossType(M.types[cat]);
     case "dir": return dirLabel(M.dirs[cat] || "(root)");
-    case "repo": return M.repos[cat] || "";
+    case "repo": return M.groupId ? sourceDisplayName(M.repos[cat], M) : M.repos[cat] || "";
     default: { const c = M.commByCid.get(cat); return c ? communityLabel(c) : tt("gx.community.n", { n: cat }); }
   }
 }
@@ -610,6 +689,28 @@ function computeColorRank() {
   });
 }
 function colorOfCat(cat) { return GX.colorRank.get(cat) || GREY; }
+function nodeSourceId(i, M = GX.M) {
+  if (M.groupId) return M.provenance[i]?.source_id || "";
+  return M.r ? M.repos[M.r[i]] || "" : M.srcId;
+}
+function sourceColor(id, M = GX.M) {
+  // Group membership is ranked like the default repo color mode, over the
+  // whole model. Filters and other color modes never change these badges.
+  for (let rank = 0; rank < Math.min(M.groups.length, PALETTE.length); rank++) {
+    if (M.repos[M.groups[rank].k] === id) return PALETTE[rank];
+  }
+  return GREY;
+}
+function groupNodeLabel(i) {
+  return `${midTrunc(sourceDisplayName(nodeSourceId(i)), 28)}: ${midTrunc(GX.M.label[i], 48)}`;
+}
+function nodeEdgeStyle(e, M = GX.M) {
+  const inferred = !!M.einf[e], source = nodeSourceId(M.es[e], M), target = nodeSourceId(M.et[e], M);
+  if (M.groupId && source && target && source !== target) {
+    return { size: inferred ? 0.7 : 1.5, color: sourceColor(source, M) + (inferred ? "2E" : "6B") };
+  }
+  return { size: inferred ? 0.6 : 1.1, color: inferred ? EDGE_COLOR_INFERRED : EDGE_COLOR };
+}
 function communityLabel(c) {
   if (!c.auto) return c.label;
   const M = GX.M;
@@ -620,6 +721,7 @@ function communityLabel(c) {
 /* ---------------- filters ---------------- */
 function nodePasses(i) {
   const M = GX.M, F = GX.filters;
+  if (GX.originSource && M.r && M.repos[M.r[i]] !== GX.originSource) return false;
   if (F.types.has(M.t[i])) return false;
   if (GX.simple && M.types[M.t[i]] === "rationale") return false;
   if (M.r && F.repos.has(M.r[i])) return false;
@@ -636,7 +738,7 @@ function edgePasses(e) {
 }
 function filtersActive() {
   const F = GX.filters;
-  return F.types.size || F.relations.size || F.repos.size || F.legend.size || F.minDeg || !F.inferred || GX.simple;
+  return GX.originSource || F.types.size || F.relations.size || F.repos.size || F.legend.size || F.minDeg || !F.inferred || GX.simple;
 }
 
 /* ---------------- view graphs ---------------- */
@@ -649,7 +751,10 @@ function nodeSize(i) {
 function scopeNodeSet() {
   const M = GX.M, sc = GX.view.scope;
   if (sc.kind === "dir") { const g = M.groupByKey.get(sc.d); return new Set(g ? g.members : []); }
-  if (sc.kind === "community") { const c = M.commByCid.get(sc.cid); return new Set(c ? c.members : []); }
+  if (sc.kind === "community") {
+    const c = M.commByCid.get(sc.cid);
+    return new Set((c ? c.members : []).filter((i) => !M.groupId || sc.dir == null || M.gk[i] === sc.dir));
+  }
   if (sc.kind === "ego") return egoSet(sc.node, sc.hops);
   if (sc.kind === "path") return new Set(sc.nodes);
   return null;  // all
@@ -690,7 +795,7 @@ function buildNodeGraph() {
     const s = M.es[e], tg = M.et[e];
     if (!inView[s] || !inView[tg] || !edgePasses(e)) continue;
     edges.push({ key: K(e), source: K(s), target: K(tg), attributes: {
-      size: M.einf[e] ? 0.6 : 1.1, color: M.einf[e] ? EDGE_COLOR_INFERRED : EDGE_COLOR, type: "arrow", eidx: e,
+      ...nodeEdgeStyle(e, M), type: "arrow", eidx: e,
     } });
   }
   g.import({ nodes, edges });
@@ -808,6 +913,75 @@ function libsReady() {
   }
   return true;
 }
+// Sigma's stock label renderer always starts to the right of a node. Keep
+// labels within the viewport at its edges, without changing stored labels.
+function fitNodeLabel(context, data, settings, bounds) {
+  if (data.label == null || !String(data.label)) return null;
+  const width = Number(bounds.width), height = Number(bounds.height);
+  const fontSize = Number(settings.labelSize) || 12, padding = 8;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(data.x) || !Number.isFinite(data.y)
+      || width < 32 || height < fontSize + padding * 2) return null;
+  let label = String(data.label), measurement = context.measureText(label);
+  const maxWidth = width - padding * 2;
+  if (measurement.width > maxWidth) {
+    const parts = typeof Intl.Segmenter === "function"
+      ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(label)].map((s) => s.segment)
+      : Array.from(label);
+    let low = 0, high = parts.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (context.measureText(parts.slice(0, mid).join("") + "…").width <= maxWidth) low = mid;
+      else high = mid - 1;
+    }
+    label = parts.slice(0, low).join("") + "…";
+    measurement = context.measureText(label);
+  }
+  const ascent = measurement.actualBoundingBoxAscent || fontSize * .8;
+  const descent = measurement.actualBoundingBoxDescent || fontSize * .2;
+  const radius = Number(data.size) || 0, separation = radius + 5;
+  if (!Number.isFinite(radius) || radius < 0) return null;
+  let x = data.x + separation;
+  let side = "right";
+  if (x + measurement.width > width - padding) {
+    x = data.x - separation - measurement.width;
+    side = "left";
+  }
+  if (x < padding) { x = Math.max(padding, Math.min(data.x - measurement.width / 2, width - padding - measurement.width)); side = "center"; }
+  let baseline = data.y + fontSize * .3;
+  if (side === "center") {
+    const below = data.y + radius + 5 + ascent;
+    baseline = below + descent <= height - padding ? below : data.y - radius - 5 - descent;
+  }
+  const y = Math.max(padding + ascent, Math.min(baseline, height - padding - descent));
+  return { label, x, y, width: measurement.width, ascent, descent, side, truncated: label !== String(data.label) };
+}
+function drawBoundedNodeLabel(context, data, settings, hovered = false) {
+  context.save();
+  context.font = `${settings.labelWeight || "600"} ${settings.labelSize || 12}px ${settings.labelFont || "sans-serif"}`;
+  context.textAlign = "left"; context.textBaseline = "alphabetic";
+  const dimensions = GX.renderer?.getDimensions?.() || {
+    width: context.canvas.clientWidth, height: context.canvas.clientHeight,
+  };
+  const label = fitNodeLabel(context, data, settings, dimensions);
+  if (label) {
+    if (hovered) {
+      context.beginPath(); context.arc(data.x, data.y, Math.max(0, Number(data.size) || 0) + 2, 0, Math.PI * 2);
+      context.fillStyle = "#FFFFFF"; context.fill();
+      context.beginPath(); context.arc(data.x, data.y, Math.max(0, Number(data.size) || 0), 0, Math.PI * 2);
+      context.fillStyle = data.color || "#4F46E5"; context.fill();
+      context.fillStyle = "#FFFFFF";
+      context.shadowColor = "rgba(15, 23, 42, .18)"; context.shadowBlur = 6;
+      context.fillRect(label.x - 4, label.y - label.ascent - 3, label.width + 8, label.ascent + label.descent + 6);
+      context.shadowBlur = 0;
+    } else {
+      context.strokeStyle = "rgba(255, 255, 255, .92)"; context.lineWidth = 3; context.lineJoin = "round";
+      context.strokeText(label.label, label.x, label.y);
+    }
+    context.fillStyle = settings.labelColor?.color || "#0F172A";
+    context.fillText(label.label, label.x, label.y);
+  }
+  context.restore();
+}
 function sigmaSettings(n, e) {
   return {
     allowInvalidContainer: true,
@@ -833,6 +1007,8 @@ function sigmaSettings(n, e) {
     minCameraRatio: 0.01, maxCameraRatio: 8,
     stagePadding: GX.isGroupView ? 90 : 40,
     labelSize: GX.isGroupView ? 13 : 12,
+    defaultDrawNodeLabel: drawBoundedNodeLabel,
+    defaultDrawNodeHover: (context, data, settings) => drawBoundedNodeLabel(context, data, settings, true),
     nodeReducer, edgeReducer,
   };
 }
@@ -865,6 +1041,11 @@ function nodeReducer(key, data) {
   const nbrs = GX.hovered ? GX.hoveredNbrs : GX.selectedNbrs;
   const pathOn = GX.path.nodes && !GX.isCommunityView && !GX.isGroupView;
   const onPath = pathOn && GX.path.nodes.has(key);
+  // Qualify only the active hover/selection label to avoid crowding neighbors
+  // and paths. Sigma's existing label budget and fitNodeLabel still apply.
+  if (GX.M?.groupId && Number.isInteger(data.idx) && key === focus) {
+    data = { ...data, label: groupNodeLabel(data.idx) };
+  }
   if (pathOn) {
     if (onPath) return { ...data, color: PATH_COLOR, size: data.size + 2, forceLabel: true, highlighted: key === focus };
     if (!focus || (key !== focus && !(nbrs && nbrs.has(key)))) return { ...data, color: DIM_NODE, label: null };
@@ -878,15 +1059,17 @@ function nodeReducer(key, data) {
 }
 function edgeReducer(key, data) {
   const focus = GX.hovered || GX.selected;
+  const inferred = GX.M?.groupId && GX.M.einf[data.eidx];
   if (GX.path.edges && !GX.isCommunityView && !GX.isGroupView) {
-    if (GX.path.edges.has(key)) return { ...data, color: PATH_COLOR, size: 2.4 };
+    if (GX.path.edges.has(key)) return { ...data, color: inferred ? PATH_COLOR + "99" : PATH_COLOR, size: inferred ? 1.2 : 2.4 };
     if (!focus) return { ...data, color: "rgba(15, 23, 42, 0.04)" };
   }
   if (!focus) return data;
   const g = GX.graph;
   if (!g.hasEdge(key) || !g.hasNode(focus)) return data;
   if (g.hasExtremity(key, focus)) {
-    return { ...data, color: g.source(key) === focus ? "rgba(79, 70, 229, 0.75)" : "rgba(124, 58, 237, 0.75)", size: Math.max(data.size, 1.6) };
+    const alpha = inferred ? 0.38 : 0.75;
+    return { ...data, color: g.source(key) === focus ? `rgba(79, 70, 229, ${alpha})` : `rgba(124, 58, 237, ${alpha})`, size: Math.max(data.size, inferred ? 0.9 : 1.6) };
   }
   return { ...data, hidden: true };
 }
@@ -964,7 +1147,10 @@ function applyView({ pushHistory = true, fit = true } = {}) {
   const g = GX.view.mode === "groups" ? buildGroupGraph() : GX.view.mode === "communities" ? buildCommunityGraph() : buildNodeGraph();
   ensureRenderer(g);
   if (fit) fitView();
-  $("gx-view").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.view === GX.view.mode));
+  $("gx-view").querySelectorAll("button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.view === GX.view.mode);
+    b.setAttribute("aria-pressed", String(b.dataset.view === GX.view.mode));
+  });
   renderChips(); renderCrumbs(); renderLegend(); renderStatus(); renderInspector();
   // Hub-scale "everything at once" warning: once per entry into that view.
   const bigAll = GX.view.mode === "full" && GX.view.scope.kind === "all" && GX.M.n > 20000;
@@ -972,7 +1158,9 @@ function applyView({ pushHistory = true, fit = true } = {}) {
   GX.warnedBig = bigAll;
   // The first-level button names what the level groups by (folders, or repos on the hub).
   const gb = $("gx-view").querySelector('[data-view="groups"]');
-  if (gb) gb.textContent = t(GX.M.groupKind === "repo" ? "gx.view.groups.repo" : "gx.view.groups");
+  if (gb) gb.textContent = t(groupLevelKey("gx.view.groups.repo", "gx.view.groups"));
+  const repoColor = $("gx-color").querySelector('option[value="repo"]');
+  if (repoColor) repoColor.textContent = t(GX.M.groupId ? "gx.group.sources" : "gx.color.repo");
 }
 function setView(view, { keepSelection = false, keepPath = false, replace = false } = {}) {
   // A path view is never history: its highlight state cannot be restored
@@ -1096,15 +1284,123 @@ function clearPath() {
 }
 
 /* ---------------- loading ---------------- */
+function cancelSourceRead() {
+  ++GX.code.seq;
+  GX.code.controller?.abort(); GX.code.controller = null;
+}
+function clearModel() {
+  cancelSourceRead();
+  GX.code.cache.clear(); GX.code.range = null;
+  GX.code.target = null;
+  cancelAnimationFrame(GX.hoverRaf); GX.hoverRaf = 0;
+  if (GX.renderer) { GX.renderer.kill(); GX.renderer = null; }
+  GX.M = null; GX.info = null; GX.graph = null;
+  GX.selected = null; GX.selectedNbrs = null; GX.hovered = null; GX.hoveredNbrs = null;
+  GX.viewNodes = []; GX.viewEdges = []; GX.history = []; clearPathState();
+  GX.colorRank.clear(); GX.legendCats = [];
+  searchHits = []; searchActive = -1;
+  for (const id of ["gx-canvas", "gx-inspector", "gx-legend", "gx-types", "gx-relations", "gx-repos", "gx-crumbs", "gx-hud", "gx-title-hud", "gx-status", "gx-search-results"]) $(id)?.replaceChildren();
+  if ($("gx-search")) { $("gx-search").value = ""; $("gx-search").ariaExpanded = "false"; }
+  if ($("gx-search-results")) $("gx-search-results").hidden = true;
+  if ($("gx-title-hud")) $("gx-title-hud").hidden = true;
+  if ($("gx-legend-count")) $("gx-legend-count").textContent = "";
+}
+function clearGroupAccess(e) {
+  GX.loadController?.abort(); ++GX.loadSeq; GX.loading = false;
+  clearTimeout(GX.pollTimer);
+  GX.cache.delete(GX.srcId);
+  clearModel();
+  showOverlay("error", t(groupDenied(e) ? "gx.group.denied" : "gx.group.stale"),
+    t(groupDenied(e) ? "gx.group.denied.body" : "gx.group.stale.body"),
+    el("button", { class: "mini", onclick: () => loadSource(GX.srcId, { force: true, sourceId: GX.originSource }) }, t("gx.retry")));
+}
+function checkLoad(seq, signal) {
+  if (signal.aborted || seq !== GX.loadSeq) throw new DOMException("Stale graph request", "AbortError");
+}
+function checkGroupContext(meta, epoch) {
+  if (S.groupEpoch === epoch) return;
+  const current = groupMetaFor(meta.group_id);
+  if (!current || current.access_recovery) throw Object.assign(new Error(t("gx.group.denied")), { status: 403 });
+  if (!groupReady(current) || current.active_version !== meta.active_version || current.revision !== meta.revision)
+    throw groupInvalid();
+}
+async function loadGroupGraph(groupId, meta, seq, signal) {
+  const nodes = [], links = [], ids = new Set(), edgeIds = new Set();
+  const sourceVersions = new Map(Object.entries(meta.active_source_versions || {}));
+  let version = "", sources = [], bytes = 0, info = null;
+  for (const [kind, rows, cap] of [["nodes", nodes, GROUP_MAX_NODES], ["links", links, GROUP_MAX_LINKS]]) {
+    let offset = 0;
+    for (;;) {
+      checkLoad(seq, signal);
+      const query = new URLSearchParams({ kind, offset: String(offset), limit: "500" });
+      if (version) query.set("group_version", version);
+      const out = await api("GET", `/groups/${encodeURIComponent(groupId)}/graph?${query}`, undefined, { signal });
+      checkLoad(seq, signal);
+      const pageBytes = new TextEncoder().encode(JSON.stringify(out)).byteLength;
+      bytes += pageBytes;
+      if (bytes > GROUP_MAX_BYTES) throw new Error(t("gx.group.limit"));
+      if (pageBytes > GROUP_PAGE_BYTES || out?.group_id !== groupId
+          || typeof out.version !== "string" || !out.version || out.group_version !== out.version
+          || (version && out.version !== version) || !Array.isArray(out[kind]) || out[kind].length > 500
+          || !Array.isArray(out.sources) || !Object.prototype.hasOwnProperty.call(out, "next_offset")
+          || (out.revision != null && meta.revision != null && out.revision !== meta.revision)) throw groupInvalid();
+      const sourceIds = out.sources.map(groupSourceId);
+      if (!sourceIds.length || sourceIds.length > 8 || new Set(sourceIds).size !== sourceIds.length
+          || sourceIds.some((id) => typeof id !== "string" || !id)
+          || (sources.length && (sourceIds.length !== sources.length || sources.some((s) => !sourceIds.includes(groupSourceId(s))))))
+        throw groupInvalid();
+      if (!version) {
+        version = out.version; sources = out.sources;
+        if ((meta.active_version && meta.active_version !== version)
+            || (Array.isArray(meta.sources) && (meta.sources.length !== sourceIds.length || meta.sources.some((s) => !sourceIds.includes(groupSourceId(s))))))
+          throw groupInvalid();
+        info = { ...meta, group_version: version, version, stats: out.stats, partial: out.partial, status: out.status || meta.status };
+      }
+      if ((Number(out.stats?.nodes) > GROUP_MAX_NODES) || (Number(out.stats?.links) > GROUP_MAX_LINKS)
+          || rows.length + out[kind].length > cap) throw new Error(t("gx.group.limit"));
+      for (const row of out[kind]) {
+        const id = kind === "links" ? row?.id ?? row?.edge_id : row?.id;
+        if (!row || typeof row !== "object" || typeof id !== "string" || !id) throw groupInvalid();
+        if (kind === "nodes") {
+          if (ids.has(row.id) || !sourceIds.includes(row.source_id) || typeof row.label !== "string"
+              || typeof row.source_version !== "string" || !row.source_version
+              || (sourceVersions.has(row.source_id) && sourceVersions.get(row.source_id) !== row.source_version))
+            throw groupInvalid();
+          sourceVersions.set(row.source_id, row.source_version); ids.add(row.id);
+        } else {
+          if (edgeIds.has(id) || !ids.has(row.source) || !ids.has(row.target)
+              || (row.id != null && row.edge_id != null && row.id !== row.edge_id)) throw groupInvalid();
+          edgeIds.add(id);
+        }
+        rows.push(row);
+      }
+      const next = out.next_offset;
+      if (next != null && (!Number.isSafeInteger(next) || next <= offset || next !== offset + out[kind].length)) throw groupInvalid();
+      const progress = $("gx-progress-txt");
+      if (progress) progress.textContent = `${t("gx.st.nodes")} ${fmtN(nodes.length)}, ${t("gx.st.edges")} ${fmtN(links.length)}, ${fmtBytes(bytes)}`;
+      if (next == null) break;
+      if (rows.length >= cap) throw new Error(t("gx.group.limit"));
+      offset = next;
+    }
+    if (Number.isSafeInteger(info.stats?.[kind]) && info.stats[kind] !== rows.length) throw groupInvalid();
+  }
+  checkLoad(seq, signal);
+  const M = fromRaw({ nodes, links }, groupId, {
+    groupId, groupVersion: version, version, groupName: meta.name || groupId,
+    groupSources: sources, sourceVersions,
+  });
+  return { M, info };
+}
 function sourceRoute(srcId) {
+  if (isGroupSource(srcId)) return `/groups/${encodeURIComponent(srcId)}/graph`;
   if (srcId === "all") return `/repos/all/graph`;
   const mine = (S.servers || []).some((s) => s.server_id === srcId) || (S.repos || []).some((r) => r.repo_id === srcId);
   return mine ? `/repos/${encodeURIComponent(srcId)}/graph` : `/catalog/${encodeURIComponent(srcId)}/graph`;
 }
-async function fetchWithProgress(url, total, onProgress) {
+async function fetchWithProgress(url, total, onProgress, signal) {
   // Bare fetch: no Authorization header (that is for the platform API; S3
   // validates the SigV4 query string), no credentials.
-  const resp = await fetch(url, { method: "GET", mode: "cors", credentials: "omit" });
+  const resp = await fetch(url, { method: "GET", mode: "cors", credentials: "omit", signal });
   if (resp.status === 403) throw new Error(t("gx.err.expired"));
   if (!resp.ok) throw new Error(`${t("gx.err.fetch")} (HTTP ${resp.status})`);
   if (!resp.body || !resp.body.getReader) return resp.text();
@@ -1120,65 +1416,98 @@ async function fetchWithProgress(url, total, onProgress) {
   for (const c of chunks) { buf.set(c, o); o += c.byteLength; }
   return new TextDecoder().decode(buf);
 }
-async function loadSource(srcId, { force = false } = {}) {
+async function loadSource(srcId, { force = false, sourceId = "" } = {}) {
   if (!srcId) return;
-  if (!libsReady()) { showOverlay("error", GX.libsError === "webgl" ? t("gx.err.webgl") : t("gx.err.libs")); return; }
+  GX.loadController?.abort(); clearTimeout(GX.pollTimer);
   const seq = ++GX.loadSeq;
+  const controller = new AbortController(); GX.loadController = controller;
+  const signal = controller.signal, group = isGroupSource(srcId);
+  const groupEpoch = S.groupEpoch;
+  clearModel();
+  GX.originSource = group ? sourceId : "";
   GX.srcId = srcId; GX.loading = true;
   try { sessionStorage.setItem("gfy-gx-src", srcId); } catch {}
   try { history.replaceState(null, "", `#graph/${encodeURIComponent(srcId)}`); } catch {}
   $("gx-source").value = srcId;
   showOverlay("loading", `${t("gx.st.loading")}…`);
   try {
-    const info = await api("GET", sourceRoute(srcId));
-    if (seq !== GX.loadSeq) return;
-    // Bearer URLs live in locals only; GX.info never holds them.
-    const vizUrl = info.viz ? info.viz.url : null, graphUrl = info.graph ? info.graph.url : null;
-    if (info.viz) info.viz.url = null;
-    if (info.graph) info.graph.url = null;
-    GX.info = info;
-    if (info.state !== "ready") {
-      const s = String(info.status || "").toUpperCase();
-      const retry = el("button", { class: "ghost mini", onclick: () => loadSource(srcId, { force: true }) }, t("gx.retry"));
-      if (info.state === "empty") showOverlay("card", t("gx.failed.title"), t("gx.failed.body") + (info.last_error ? `\n${clean(info.last_error, 300)}` : ""), retry);
-      else {
-        showOverlay("card", t("gx.pending.title"), tt("gx.pending.body", { s: s || "-" }), retry);
-        // A build in flight resolves on its own: re-check while the tab is open.
-        clearTimeout(GX.pollTimer);
-        GX.pollTimer = setTimeout(() => { if (GX.shown && GX.srcId === srcId && !GX.M) loadSource(srcId); }, 20000);
-      }
-      return;
-    }
-    const etag = info.viz ? "v:" + info.viz.etag : info.graph ? "g:" + info.graph.etag : "";
-    const cached = GX.cache.get(srcId);
     let M;
-    if (cached && cached.etag === etag && !force) {
-      M = cached.M;
-    } else if (vizUrl) {
-      if ((info.viz.raw_bytes || 0) > MAX_BUNDLE_RAW_BYTES) throw new Error(tt("gx.toobig.body", { size: fmtBytes(info.viz.raw_bytes) }));
-      // The stream yields DECODED bytes (Content-Encoding: gzip is transparent),
-      // so the denominator is the bundle's uncompressed size, not Content-Length.
-      const text = await fetchWithProgress(vizUrl, info.viz.raw_bytes || 0, (got, total) => showProgress(got, total, info.viz.bytes));
-      if (seq !== GX.loadSeq) return;
-      showOverlay("loading", t("gx.st.parsing"));
-      await new Promise((r) => setTimeout(r, 0));
-      M = fromBundle(JSON.parse(text), srcId);
-    } else if (graphUrl) {
-      const text = await fetchWithProgress(graphUrl, info.graph.bytes, (got, total) => showProgress(got, total));
-      if (seq !== GX.loadSeq) return;
-      showOverlay("loading", t("gx.st.parsing"));
-      await new Promise((r) => setTimeout(r, 0));
-      M = fromRaw(JSON.parse(text), srcId);
-      flash("ok", tt("gx.rawnotice", { size: fmtBytes(info.graph.bytes) }));
+    if (group) {
+      // Metadata includes draft, pending, partial and recovery states that the
+      // ready-only server list intentionally omits.
+      const response = await api("GET", `/groups/${encodeURIComponent(srcId)}`, undefined, { signal });
+      checkLoad(seq, signal);
+      const meta = response?.group;
+      if (!meta || meta.group_id !== srcId) throw groupInvalid();
+      checkGroupContext(meta, groupEpoch);
+      GX.info = meta;
+      if (meta.access_recovery) { clearGroupAccess({ status: 403 }); return; }
+      if (!groupReady(meta)) {
+        const stale = meta.active_version && (meta.stale || meta.active_revision !== meta.revision);
+        showOverlay("card", t(stale ? "gx.group.stale" : "gx.group.pending"),
+          stale ? t("gx.group.stale.body") : tt("gx.group.pending.body", { s: meta.status || "DRAFT" }),
+          el("button", { class: "mini", onclick: () => loadSource(srcId, { force: true, sourceId }) }, t("gx.retry")));
+        GX.pollTimer = setTimeout(() => { if (GX.shown && GX.srcId === srcId && !GX.M && !GX.loading) loadSource(srcId, { sourceId }); }, 20000);
+        return;
+      }
+      if (!libsReady()) throw new Error(t(GX.libsError === "webgl" ? "gx.err.webgl" : "gx.err.libs"));
+      const result = await loadGroupGraph(srcId, meta, seq, signal);
+      checkLoad(seq, signal);
+      checkGroupContext(meta, groupEpoch);
+      M = result.M; GX.info = result.info;
     } else {
-      const size = info.graph ? fmtBytes(info.graph.bytes) : "?";
-      showOverlay("card", t("gx.toobig.title"), tt(srcId === "all" ? "gx.toobig.hub" : "gx.toobig.body", { size }), rebuildButton(srcId));
-      return;
+      if (!libsReady()) { showOverlay("error", GX.libsError === "webgl" ? t("gx.err.webgl") : t("gx.err.libs")); return; }
+      const info = await api("GET", sourceRoute(srcId), undefined, { signal });
+      if (seq !== GX.loadSeq) return;
+      // Bearer URLs live in locals only; GX.info never holds them.
+      const vizUrl = info.viz ? info.viz.url : null, graphUrl = info.graph ? info.graph.url : null;
+      if (info.viz) info.viz.url = null;
+      if (info.graph) info.graph.url = null;
+      GX.info = info;
+      if (info.state !== "ready") {
+        const s = String(info.status || "").toUpperCase();
+        const retry = el("button", { class: "ghost mini", onclick: () => loadSource(srcId, { force: true }) }, t("gx.retry"));
+        if (info.state === "empty") showOverlay("card", t("gx.failed.title"), t("gx.failed.body") + (info.last_error ? `\n${clean(info.last_error, 300)}` : ""), retry);
+        else {
+          showOverlay("card", t("gx.pending.title"), tt("gx.pending.body", { s: s || "-" }), retry);
+          // A build in flight resolves on its own: re-check while the tab is open.
+          clearTimeout(GX.pollTimer);
+          GX.pollTimer = setTimeout(() => { if (GX.shown && GX.srcId === srcId && !GX.M) loadSource(srcId); }, 20000);
+        }
+        return;
+      }
+      const etag = info.viz ? "v:" + info.viz.etag : info.graph ? "g:" + info.graph.etag : "";
+      const cached = GX.cache.get(srcId);
+      if (cached && cached.etag === etag && !force) {
+        M = cached.M;
+      } else if (vizUrl) {
+        if ((info.viz.raw_bytes || 0) > MAX_BUNDLE_RAW_BYTES) throw new Error(tt("gx.toobig.body", { size: fmtBytes(info.viz.raw_bytes) }));
+        // The stream yields DECODED bytes (Content-Encoding: gzip is transparent),
+        // so the denominator is the bundle's uncompressed size, not Content-Length.
+        const text = await fetchWithProgress(vizUrl, info.viz.raw_bytes || 0, (got, total) => { if (seq === GX.loadSeq) showProgress(got, total, info.viz.bytes); }, signal);
+        if (seq !== GX.loadSeq) return;
+        showOverlay("loading", t("gx.st.parsing"));
+        await new Promise((r) => setTimeout(r, 0));
+        checkLoad(seq, signal);
+        M = fromBundle(JSON.parse(text), srcId);
+      } else if (graphUrl) {
+        const text = await fetchWithProgress(graphUrl, info.graph.bytes, (got, total) => { if (seq === GX.loadSeq) showProgress(got, total); }, signal);
+        if (seq !== GX.loadSeq) return;
+        showOverlay("loading", t("gx.st.parsing"));
+        await new Promise((r) => setTimeout(r, 0));
+        checkLoad(seq, signal);
+        M = fromRaw(JSON.parse(text), srcId);
+        flash("ok", tt("gx.rawnotice", { size: fmtBytes(info.graph.bytes) }));
+      } else {
+        const size = info.graph ? fmtBytes(info.graph.bytes) : "?";
+        showOverlay("card", t("gx.toobig.title"), tt(srcId === "all" ? "gx.toobig.hub" : "gx.toobig.body", { size }), rebuildButton(srcId));
+        return;
+      }
+      if (seq !== GX.loadSeq) return;
+      GX.cache.set(srcId, { etag, M });
+      // A parsed model is tens of MB; keep the last few sources only.
+      while (GX.cache.size > 3) GX.cache.delete(GX.cache.keys().next().value);
     }
-    if (seq !== GX.loadSeq) return;
-    GX.cache.set(srcId, { etag, M });
-    // A parsed model is tens of MB; keep the last few sources only.
-    while (GX.cache.size > 3) GX.cache.delete(GX.cache.keys().next().value);
     GX.M = M;
     GX.history = []; GX.selected = null; GX.selectedNbrs = null; clearPathState(); GX.code.range = null;
     GX.filters = { types: new Set(), relations: new Set(), repos: new Set(), legend: new Set(), minDeg: 0, inferred: true };
@@ -1192,13 +1521,16 @@ async function loadSource(srcId, { force = false } = {}) {
     renderChips();
     hideOverlay();
     GX.view = { mode: rootMode(M), scope: { kind: "all" } };
+    if (GX.originSource) GX.view.mode = "full";
     applyView();
     if (!M.n) showOverlay("card", t("gx.emptygraph.title"), t("gx.emptygraph.body"));
   } catch (e) {
-    if (seq !== GX.loadSeq) return;
+    if (seq !== GX.loadSeq || e?.name === "AbortError") return;
+    if (group && (groupDenied(e) || Number(e?.status) === 409)) { clearGroupAccess(e); return; }
+    clearModel();
     const msg = e && e.message ? e.message : String(e);
     showOverlay("error", /JSON|parse|bad bundle|bad graph/i.test(msg) ? t("gx.err.parse") : t("gx.err.fetch"), clean(msg, 200),
-      el("button", { class: "mini", onclick: () => loadSource(srcId, { force: true }) }, t("gx.retry")));
+      el("button", { class: "mini", onclick: () => loadSource(srcId, { force: true, sourceId }) }, t("gx.retry")));
   } finally { if (seq === GX.loadSeq) GX.loading = false; }
 }
 function clearPathState() { GX.path = { a: null, b: null, nodes: null, edges: null, result: null }; }
@@ -1234,7 +1566,7 @@ function showHud() {
   const hud = $("gx-hud"); hud.replaceChildren();
   if (!GX.M) return;
   const g = GX.graph;
-  if (GX.isGroupView) hud.append(el("span", null, `${t(GX.M.groupKind === "repo" ? "gx.view.groups.repo" : "gx.view.groups")} ${fmtN(g.order)}, ${t("gx.st.edges")} ${fmtN(g.size)}`));
+  if (GX.isGroupView) hud.append(el("span", null, `${t(groupLevelKey("gx.view.groups.repo", "gx.view.groups"))} ${fmtN(g.order)}, ${t("gx.st.edges")} ${fmtN(g.size)}`));
   else if (GX.isCommunityView) hud.append(el("span", null, `${t("gx.st.communities")} ${fmtN(g.order)}, ${t("gx.st.edges")} ${fmtN(g.size)}`));
   else hud.append(el("span", null, `${t("gx.st.shown")} ${fmtN(g.order)} / ${fmtN(GX.M.n)}, ${t("gx.st.edges")} ${fmtN(g.size)}`));
   if (GX.simple) hud.append(el("span", { class: "warn" }, t("gx.simple")));
@@ -1259,7 +1591,7 @@ function renderScopeTitle() {
     title = communityLabel(c); sub = `${t("gx.hud.scope.community")}, ${fmtN(c.members.length)} ${t("gx.st.nodes")}${c.dir ? `, ${c.dir}/ ${Math.round(c.dirShare * 100)}%` : ""}`;
   } else if (sc.kind === "dir") {
     const grp = M.groupByKey.get(sc.d); if (!grp) return;
-    title = dirLabel(grp.label); sub = `${t(M.groupKind === "repo" ? "gx.gk.repo" : "gx.hud.scope.dir")}, ${fmtN(grp.members.length)} ${t("gx.st.nodes")}, ${fmtN(new Set(grp.members.map((i) => M.c[i])).size)} ${t("gx.st.communities")}`;
+    title = dirLabel(grp.label); sub = `${t(groupLevelKey("gx.gk.repo", "gx.hud.scope.dir"))}, ${fmtN(grp.members.length)} ${t("gx.st.nodes")}, ${fmtN(new Set(grp.members.map((i) => M.c[i])).size)} ${t("gx.st.communities")}`;
   } else if (sc.kind === "ego") {
     title = M.label[sc.node]; sub = `${t("gx.crumb.ego")}, ${tt("gx.hop", { n: sc.hops })}`;
   } else return;
@@ -1272,7 +1604,8 @@ function renderStatus() {
   const sep = () => el("span", { class: "sep" }, "/");
   st.append(el("span", null, `${t("gx.st.nodes")} ${fmtN(M.n)}`), sep(), el("span", null, `${t("gx.st.edges")} ${fmtN(M.e)}`), sep(),
     el("span", null, `${t("gx.st.communities")} ${fmtN(M.communities.length)}`), sep(),
-    el("span", null, M.layoutSource === "build" ? t("gx.st.layout") : t("gx.st.layout.client")));
+    el("span", null, M.groupId ? t("gx.group.layout") : M.layoutSource === "build" ? t("gx.st.layout") : t("gx.st.layout.client")));
+  if (M.groupId) st.append(sep(), el("span", { class: "mono" }, `${t("gx.group.version")}: ${M.groupVersion}`));
   const built = (GX.info && GX.info.last_built_at) || M.header.generated_at;
   if (built) st.append(sep(), el("span", null, `${t("gx.st.built")} ${String(built).slice(0, 16).replace("T", " ")}`));
   if (M.header.built_at_commit) st.append(sep(), el("span", { class: "mono" }, M.header.built_at_commit.slice(0, 10)));
@@ -1283,21 +1616,24 @@ function renderCrumbs() {
   if (!GX.M) return;
   const crumb = (label, onclick) => onclick ? el("button", { onclick }, label) : el("span", { class: "cur" }, label);
   const sep = () => el("span", { class: "sep" }, "›");
-  const rootLabel = `${serverName(GX.srcId)} (${fmtN(GX.M.n)})`;
+  const rootLabel = `${sourceDisplayName(GX.srcId)} (${fmtN(GX.M.n)})`;
   const sc = GX.view.scope;
   const atRoot = sc.kind === "all" && GX.view.mode === rootMode(GX.M);
   c.append(crumb(rootLabel, atRoot ? null : () => { GX.history = []; showRoot(); }));
+  if (GX.originSource) c.append(sep(), el("span", { class: "gx-origin-filter" },
+    tt("gx.group.filtered", { source: sourceDisplayName(GX.originSource) }),
+    el("button", { onclick: () => { GX.originSource = ""; GX.history = []; showRoot(); } }, t("gx.group.clearfilter"))));
   if (sc.kind === "all" && !atRoot) c.append(sep(), crumb(GX.view.mode === "communities" ? t("gx.crumb.community") : t("gx.crumb.all")));
   if (sc.kind === "dir") {
     const grp = GX.M.groupByKey.get(sc.d);
-    const lbl = `${t(GX.M.groupKind === "repo" ? "gx.crumb.group.repo" : "gx.crumb.group")}: ${grp ? dirLabel(grp.label) : sc.d} (${fmtN(grp ? grp.members.length : 0)})`;
+    const lbl = `${t(groupLevelKey("gx.crumb.group.repo", "gx.crumb.group"))}: ${grp ? dirLabel(grp.label) : sc.d} (${fmtN(grp ? grp.members.length : 0)})`;
     c.append(sep(), GX.view.mode === "communities" ? crumb(lbl) : crumb(lbl, () => setView({ mode: "communities", scope: { kind: "dir", d: sc.d } })));
     if (GX.view.mode === "full") c.append(sep(), crumb(t("gx.crumb.all")));
   }
   if (sc.kind === "community") {
     if (sc.dir != null) {
       const grp = GX.M.groupByKey.get(sc.dir);
-      c.append(sep(), crumb(`${t(GX.M.groupKind === "repo" ? "gx.crumb.group.repo" : "gx.crumb.group")}: ${grp ? dirLabel(grp.label) : sc.dir}`, () => setView({ mode: "communities", scope: { kind: "dir", d: sc.dir } })));
+      c.append(sep(), crumb(`${t(groupLevelKey("gx.crumb.group.repo", "gx.crumb.group"))}: ${grp ? dirLabel(grp.label) : sc.dir}`, () => setView({ mode: "communities", scope: { kind: "dir", d: sc.dir } })));
     }
     const cm = GX.M.commByCid.get(sc.cid); c.append(sep(), crumb(`${t("gx.crumb.community")}: ${cm ? communityLabel(cm) : sc.cid} (${fmtN(GX.graph.order)})`));
   }
@@ -1321,7 +1657,7 @@ function restoreFocus(container, key) {
 function chip(label, count, active, onToggle, swatch, mono, key) {
   const b = el("button", { class: `gx-chip${active ? "" : " off"}${mono ? " mono" : ""}`, type: "button", "aria-pressed": String(active), onclick: onToggle, "data-key": key || label });
   if (swatch) b.append(el("span", { class: "sw", style: `background:${swatch}` }));
-  b.append(document.createTextNode(label));
+  b.append(el("span", { class: "lb" }, label));
   if (count != null) b.append(el("span", { class: "n" }, fmtN(count)));
   return b;
 }
@@ -1343,11 +1679,13 @@ function renderChips() {
     relEl.append(rchip);
   }
   const repoField = $("gx-repos-field"), repoEl = $("gx-repos"); repoEl.replaceChildren();
+  const repoLabel = repoField.querySelector("label");
+  if (repoLabel) repoLabel.textContent = t(M.groupId ? "gx.group.sources" : "gx.repos");
   repoField.hidden = !(M.r && M.repos.length > 1);
   if (M.r) {
     const c = new Map(); for (let i = 0; i < M.n; i++) c.set(M.r[i], (c.get(M.r[i]) || 0) + 1);
     for (const [ri, n] of [...c.entries()].sort((a, b) => b[1] - a[1])) {
-      repoEl.append(chip(midTrunc(serverName(M.repos[ri]) || M.repos[ri], 30), n, !F.repos.has(ri), () => { toggle(F.repos, ri); applyView({ fit: false }); }, null, true, "p:" + ri));
+      repoEl.append(chip(midTrunc(sourceDisplayName(M.repos[ri], M) || M.repos[ri], 30), n, !F.repos.has(ri), () => { toggle(F.repos, ri); applyView({ fit: false }); }, null, true, "p:" + ri));
     }
   }
   restoreFocus(left, fk);
@@ -1357,16 +1695,24 @@ let legendLimit = 60;
 function renderLegend() {
   const M = GX.M, F = GX.filters, box = $("gx-legend"); const fk = focusedKey(box); box.replaceChildren();
   if (!M) return;
+  if (M.groupId && !GX.isCommunityView && !GX.isGroupView) {
+    const key = el("div", { class: "gx-edge-legend" });
+    key.append(
+      el("div", null, el("span", { class: "gx-edge-sample", "aria-hidden": "true", style: `border-color:${PALETTE[0]}6B;border-top-width:3px` }), t("gx.group.edges.cross")),
+      el("div", null, el("span", { class: "gx-edge-sample", "aria-hidden": "true", style: `border-color:${EDGE_COLOR}` }), t("gx.group.edges.same")),
+      el("p", null, t("gx.group.edges.hint")));
+    box.append(key);
+  }
   const q = ($("gx-legend-filter").value || "").trim().toLowerCase();
   const cats = GX.legendCats.filter((c) => !q || c.label.toLowerCase().includes(q));
   $("gx-legend-count").textContent = fmtN(GX.legendCats.length);
   const shown = cats.slice(0, legendLimit);
   for (const c of shown) {
-    const row = clickable(el("div", { class: `gx-lg${F.legend.has(c.cat) ? " off" : ""}${GX.view.scope.kind === "community" && GX.colorBy === "community" && GX.view.scope.cid === c.cat ? " active" : ""}`, "data-key": "l:" + c.cat }));
-    const cb = el("input", { type: "checkbox" }); cb.checked = !F.legend.has(c.cat);
+    const row = el("div", { class: `gx-lg${F.legend.has(c.cat) ? " off" : ""}${GX.view.scope.kind === "community" && GX.colorBy === "community" && GX.view.scope.cid === c.cat ? " active" : ""}`, "data-key": "l:" + c.cat });
+    const cb = el("input", { type: "checkbox", "aria-label": c.label }); cb.checked = !F.legend.has(c.cat);
     cb.addEventListener("change", (e) => { e.stopPropagation(); toggle(F.legend, c.cat); applyView({ fit: false }); });
     row.append(cb, el("span", { class: "sw", style: `background:${c.color}` }));
-    const lb = el("span", { class: "lb" }, c.label);
+    const lb = el("button", { type: "button", class: "lb", "aria-label": c.label }, c.label);
     if (GX.colorBy === "community") { const cm = M.commByCid.get(c.cat); if (cm && cm.auto) lb.append(" ", el("small", null, `#${c.cat}`)); }
     row.append(lb, el("span", { class: "n" }, fmtN(c.n)));
     row.title = c.label;
@@ -1387,7 +1733,7 @@ function renderLegend() {
   restoreFocus(box, fk);
 }
 // Legend row click (non-community modes): spotlight that category via the
-// hover mechanism — every other node dims until the pointer moves.
+// hover mechanism; every other node dims until the pointer moves.
 function selectCategory(cat) {
   const g = GX.graph; const keys = [];
   if (GX.isGroupView) {
@@ -1404,21 +1750,72 @@ function selectCategory(cat) {
 // Click-only rows become keyboard-operable (Enter/Space) without changing markup.
 function clickable(node) {
   node.tabIndex = 0; node.setAttribute("role", "button");
-  node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); node.click(); } });
+  node.addEventListener("keydown", (e) => { if (e.target === node && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); node.click(); } });
   return node;
 }
 function copyBtn(text) {
   return el("button", { class: "gx-copy", onclick: (e) => { copyText(text); const b = e.target; const o = b.textContent; b.textContent = t("gx.ins.copied"); setTimeout(() => { b.textContent = o; }, 1200); } }, t("gx.ins.copy"));
 }
+function sourceBadge(id) {
+  const name = sourceDisplayName(id), label = `${t("gx.group.source")}: ${name} (${id})`;
+  return el("span", { class: "gx-source-badge", title: label, "aria-label": label },
+    el("span", { class: "gx-source-swatch", "aria-hidden": "true", style: `background:${sourceColor(id)}` }),
+    el("span", { class: "gx-source-name" }, name));
+}
+function connectedSources(i, M = GX.M) {
+  if (!M.groupId) return [];
+  const sources = new Map(), seenEdges = new Set();
+  // CSR contains each self-loop twice. Count actual edges once, parallel
+  // edges separately, and distinct neighbors by index, never by label.
+  for (let p = M.adj.off[i]; p < M.adj.off[i + 1]; p++) {
+    const e = M.adj.eid[p];
+    if (seenEdges.has(e)) continue;
+    seenEdges.add(e);
+    const v = M.adj.nb[p], sourceId = nodeSourceId(v, M);
+    if (!sources.has(sourceId)) sources.set(sourceId, { sourceId, neighbors: new Set(), edges: 0, incoming: 0, outgoing: 0, inferred: 0, selfLoops: 0 });
+    const row = sources.get(sourceId);
+    if (v !== i) row.neighbors.add(v); else row.selfLoops++;
+    row.edges++;
+    if (M.es[e] === i) row.outgoing++;
+    if (M.et[e] === i) row.incoming++;
+    if (M.einf[e]) row.inferred++;
+  }
+  return [...sources.values()].map(({ neighbors, ...row }) => ({ ...row, neighborCount: neighbors.size }))
+    .sort((a, b) => b.neighborCount - a.neighborCount || b.edges - a.edges || a.sourceId.localeCompare(b.sourceId));
+}
+function renderConnectedSources(box, i) {
+  const rows = connectedSources(i), list = el("div", { class: "gx-source-connections" });
+  box.append(el("h4", null, t("gx.group.connected"), el("span", { class: "gx-count" }, fmtN(rows.length))),
+    el("p", { class: "gx-sub" }, t("gx.group.connected.scope")), list);
+  if (!rows.length) list.append(el("p", { class: "gx-sub" }, t("gx.group.connected.empty")));
+  const appendRow = (row) => {
+    const direction = `${t("gx.ins.out")} ${fmtN(row.outgoing)}, ${t("gx.ins.in")} ${fmtN(row.incoming)}, ${t("gx.inferred.short")} ${fmtN(row.inferred)}`;
+    const item = el("div", { class: "gx-source-connection" }, sourceBadge(row.sourceId),
+      el("div", { class: "gx-source-counts" }, tt("gx.group.connected.counts", { n: fmtN(row.neighborCount), e: fmtN(row.edges) })),
+      el("div", { class: "gx-sub" }, direction));
+    if (row.selfLoops) item.append(el("div", { class: "gx-sub" }, tt("gx.group.connected.loops", { n: fmtN(row.selfLoops) })));
+    list.append(item);
+  };
+  rows.slice(0, 8).forEach(appendRow);
+  if (rows.length > 8) list.append(el("button", { class: "ghost mini", onclick: (event) => {
+    event.currentTarget.remove(); rows.slice(8).forEach(appendRow);
+  } }, tt("gx.ins.more", { n: fmtN(rows.length - 8) })));
+  if (rows.some((row) => row.selfLoops)) box.append(el("p", { class: "gx-sub" }, t("gx.group.connected.loopnote")));
+}
 function nodeRow(i, meta) {
   const M = GX.M;
-  const row = el("div", { class: "gx-nb", onclick: () => revealNode(i), title: `${M.label[i]}\n${M.files[M.f[i]]}${M.loc[i] ? ":" + M.loc[i] : ""}` },
+  const sourceId = M.groupId ? nodeSourceId(i) : "", origin = sourceId ? `${t("gx.group.source")}: ${sourceDisplayName(sourceId)} (${sourceId})` : "";
+  const label = el("span", { class: "lb" }, sourceId ? M.label[i] : midTrunc(M.label[i], 44));
+  if (sourceId) label.append(sourceBadge(sourceId));
+  const row = el("div", { class: `gx-nb${sourceId ? " gx-nb-source" : ""}`, onclick: () => revealNode(i), "aria-label": origin ? `${M.label[i]}, ${origin}` : M.label[i], title: `${M.label[i]}\n${M.files[M.f[i]]}${M.loc[i] ? ":" + M.loc[i] : ""}${origin ? "\n" + origin : ""}` },
     el("span", { class: "sw", style: `background:${colorOfCat(catOfNode(i))}` }),
-    el("span", { class: "lb" }, midTrunc(M.label[i], 44)));
+    label);
   if (meta) row.append(el("span", { class: "meta" }, meta));
   return clickable(row);
 }
 function renderInspector() {
+  cancelSourceRead();
+  GX.code.target = null;
   const box = $("gx-inspector"); box.replaceChildren();
   const M = GX.M;
   if (!M) { box.append(el("p", { class: "gx-empty" }, t("gx.ins.empty"))); return; }
@@ -1456,8 +1853,8 @@ function renderGroupInspector(box, grp) {
     box.append(el("h4", null, t("gx.ins.groups.linked")));
     for (const ge of linked) {
       const other = M.groupByKey.get(ge[0] === grp.k ? ge[1] : ge[0]); if (!other) continue;
-      box.append(el("div", { class: "gx-nb", onclick: () => { const k = "g:" + other.k; if (GX.graph.hasNode(k)) { setSelected(k); focusNodeCamera(k); } } },
-        el("span", { class: "lb", style: "font-family:var(--font);" }, dirLabel(other.label)), el("span", { class: "meta" }, `${fmtN(ge[2])} ${t("gx.st.edges")}`)));
+      box.append(clickable(el("div", { class: "gx-nb", onclick: () => { const k = "g:" + other.k; if (GX.graph.hasNode(k)) { setSelected(k); focusNodeCamera(k); } } },
+        el("span", { class: "lb", style: "font-family:var(--font);" }, dirLabel(other.label)), el("span", { class: "meta" }, `${fmtN(ge[2])} ${t("gx.st.edges")}`))));
     }
   }
 }
@@ -1470,10 +1867,11 @@ function renderSummary(box) {
   if (M.n) {
     const card = el("div", { class: "gx-summary" });
     card.append(el("p", null, richText("gx.summary", {
-      n: fmtN(M.n), e: fmtN(M.e), c: fmtN(M.communities.length), gk: t(M.groupKind === "repo" ? "gx.gk.repo" : "gx.gk.dir"),
+      n: fmtN(M.n), e: fmtN(M.e), c: fmtN(M.communities.length), gk: t(groupLevelKey("gx.gk.repo", "gx.gk.dir")),
       top: topGroup ? `${dirLabel(topGroup.label)} (${fmtN(topGroup.members.length)})` : "-", hub: midTrunc(M.label[hubIdx], 40), d: fmtN(M.deg[hubIdx]),
     })));
-    card.append(el("p", { class: "hint-line" }, t("gx.summary.hint")));
+    card.append(el("p", { class: "hint-line" }, t(M.groupId ? "gx.group.hint" : "gx.summary.hint")));
+    if (M.groupId && (info.partial || info.status === "PARTIAL")) card.append(el("p", { class: "hint-line" }, t("gx.group.partial")));
     box.append(card);
   }
   box.append(el("h4", null, t("gx.ins.stats")));
@@ -1493,12 +1891,15 @@ function renderSummary(box) {
 function renderNodeInspector(box, i) {
   const M = GX.M;
   box.append(el("div", { class: "gx-title" }, M.label[i]));
+  if (M.groupId) box.append(el("div", { class: "gx-origin-card" },
+    el("div", { class: "gx-source-caption" }, t("gx.group.source")), sourceBadge(nodeSourceId(i))));
   const pills = el("div", { class: "gx-pills" });
   pills.append(el("span", { class: "pill neutral", style: `background:${typeColor(M.types[M.t[i]]) || GREY}22; color:#0F172A;`, title: M.types[M.t[i]] || "" }, glossType(M.types[M.t[i]])));
   if (M.kinds[M.k[i]]) pills.append(el("span", { class: "pill neutral", title: M.kinds[M.k[i]] }, glossKind(M.kinds[M.k[i]])));
   const cm = M.commByCid.get(M.c[i]);
-  if (cm) pills.append(el("span", { class: "pill private", style: "cursor:pointer;", title: t("gx.ins.community"), onclick: () => drillCommunity(cm.id) }, midTrunc(communityLabel(cm), 36)));
+  if (cm) pills.append(clickable(el("span", { class: "pill private", style: "cursor:pointer;", title: t("gx.ins.community"), "aria-label": communityLabel(cm), onclick: () => drillCommunity(cm.id) }, midTrunc(communityLabel(cm), 36))));
   box.append(pills);
+  if (M.groupId) renderConnectedSources(box, i);
   const kv = el("dl", { class: "gx-kv" });
   const file = M.files[M.f[i]];
   const fileRef = file ? `${file}${M.loc[i] ? ":" + M.loc[i] : ""}` : "-";
@@ -1507,7 +1908,11 @@ function renderNodeInspector(box, i) {
   let ind = 0, outd = 0;
   for (let p = M.adj.off[i]; p < M.adj.off[i + 1]; p++) { if (M.adj.dir[p]) outd++; else ind++; }
   kv.append(el("dt", null, t("gx.ins.degree")), el("dd", null, `${fmtN(M.deg[i])} (${t("gx.ins.out")} ${fmtN(outd)}, ${t("gx.ins.in")} ${fmtN(ind)})`));
-  if (M.r) kv.append(el("dt", null, t("gx.ins.repo")), el("dd", { class: "mono" }, M.repos[M.r[i]] || "-"));
+  if (M.r) kv.append(el("dt", null, t(M.groupId ? "gx.group.sourceid" : "gx.ins.repo")), el("dd", { class: "mono" }, M.repos[M.r[i]] || "-"));
+  if (M.groupId) {
+    kv.append(el("dt", null, t("gx.group.version")), el("dd", { class: "mono" }, M.groupVersion),
+      el("dt", null, t("gx.group.sourceversion")), el("dd", { class: "mono" }, M.provenance[i].source_version));
+  }
   box.append(kv);
   const pathB = el("button", { class: "ghost mini", onclick: () => setPathEndpoint("b", i) }, t("gx.ins.pathB"));
   pathB.disabled = GX.path.a == null || GX.path.a === i;
@@ -1568,9 +1973,9 @@ function renderCommunityInspector(box, c) {
     box.append(el("h4", null, t("gx.ins.linked")));
     for (const ce of linked) {
       const other = M.commByCid.get(ce[0] === c.id ? ce[1] : ce[0]); if (!other) continue;
-      box.append(el("div", { class: "gx-nb", onclick: () => { if (GX.isCommunityView && GX.graph.hasNode(CK(other.id))) { setSelected(CK(other.id)); focusNodeCamera(CK(other.id)); } else drillCommunity(other.id); } },
+      box.append(clickable(el("div", { class: "gx-nb", "aria-label": communityLabel(other), onclick: () => { if (GX.isCommunityView && GX.graph.hasNode(CK(other.id))) { setSelected(CK(other.id)); focusNodeCamera(CK(other.id)); } else drillCommunity(other.id); } },
         el("span", { class: "sw", style: `background:${colorOfCat(catOfCommunity(other))}` }),
-        el("span", { class: "lb", style: "font-family:var(--font);" }, midTrunc(communityLabel(other), 40)), el("span", { class: "meta" }, `${fmtN(ce[2])} ${t("gx.st.edges")}`)));
+        el("span", { class: "lb", style: "font-family:var(--font);" }, midTrunc(communityLabel(other), 40)), el("span", { class: "meta" }, `${fmtN(ce[2])} ${t("gx.st.edges")}`))));
     }
   }
 }
@@ -1583,7 +1988,8 @@ function renderPathSection(box) {
   const list = el("div", { class: "gx-path-list" });
   P.result.nodes.forEach((v, k) => {
     const step = el("div", { class: "step", onclick: () => revealNode(v) }, el("span", { class: "sw", style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${PATH_COLOR}` }), el("span", null, midTrunc(M.label[v], 40)));
-    list.append(step);
+    step.setAttribute("aria-label", M.label[v]);
+    list.append(clickable(step));
     if (k < P.result.edges.length) {
       const e = P.result.edges[k]; const fwd = M.es[e] === v;
       list.append(el("div", { class: "step rel", style: "padding-left:18px;", title: M.relations[M.er[e]] || "" }, `${fwd ? "↓" : "↑"} ${glossRel(M.relations[M.er[e]])}`));
@@ -1595,13 +2001,97 @@ function renderPathSection(box) {
  * Per-repo MCP servers carry read_source(file, start_line, end_line), served
  * from the build's source snapshot. The console asks the platform API
  * (POST /repos/{id}/source), which applies the same access rule as the graph
- * routes and forwards the single read to the repo's task — no API key needed. */
+ * routes and forwards the single read to the repo's task, no API key needed.
+ * Groups use authenticated, version-pinned /groups/{id}/source reads.
+ * A source without a dedicated runtime can use a ready group containing the
+ * same active source version. No group read uses the repo MCP route. */
 const CODE_WINDOW = 40;
 function sourceServerFor(i) {
   // Hub nodes belong to a repo; its dedicated server holds the snapshot.
   const M = GX.M;
+  if (M.groupId) return M.provenance[i]?.source_id || "";
   if (GX.srcId === "all") return M.r ? M.repos[M.r[i]] : "";
   return GX.srcId;
+}
+function sourceTargetsFor(M, i) {
+  if (M.groupId) {
+    const node = M.provenance[i];
+    return node?.source_id && node.source_version ? [{
+      groupId: M.groupId, groupVersion: M.groupVersion,
+      sourceId: node.source_id, sourceVersion: node.source_version,
+    }] : [];
+  }
+  const rid = M.srcId === "all" ? (M.r ? M.repos[M.r[i]] : "") : M.srcId;
+  if (!rid) return [];
+  const repo = (S.repos || []).find((r) => r.repo_id === rid);
+  const server = (S.servers || []).find((s) => s.server_id === rid);
+  const groupOnly = [repo, server].some((s) => s && [false, 0, "0"].includes(s.dedicated_runtime));
+  if (!groupOnly) return [{ server: rid }];
+  if (!repo?.active_source_version) return [];
+  return (S.groups || []).filter((g) => groupReady(g)
+    && (g.sources || []).some((s) => groupSourceId(s) === rid)
+    && Object.prototype.hasOwnProperty.call(g.active_source_versions || {}, rid)
+    && g.active_source_versions[rid] === repo.active_source_version).map((g) => ({
+      groupId: g.group_id, groupVersion: g.active_version, sourceId: rid, sourceVersion: repo.active_source_version,
+    }));
+}
+function checkSourceRead(M, seq, signal) {
+  if (signal.aborted || seq !== GX.code.seq || M !== GX.M) throw new DOMException("Stale source request", "AbortError");
+}
+async function readSourceResult(M, i, file, start, end, seq, signal) {
+  const unavailable = () => Object.assign(new Error(t("gx.code.groupunavailable")), { code: "GROUP_SOURCE_UNAVAILABLE" });
+  const targets = sourceTargetsFor(M, i);
+  if (!targets.length) throw unavailable();
+  for (const target of targets) {
+    checkSourceRead(M, seq, signal);
+    if (!target.groupId) {
+      const cacheKey = JSON.stringify([target.server, file, start, end]);
+      let text = GX.code.cache.get(cacheKey);
+      if (text == null) {
+        const out = await api("POST", `/repos/${encodeURIComponent(target.server)}/source`,
+          { file, start_line: start, end_line: end }, { signal });
+        checkSourceRead(M, seq, signal);
+        text = String(out.text || "");
+        GX.code.cache.set(cacheKey, text);
+        while (GX.code.cache.size > 60) GX.code.cache.delete(GX.code.cache.keys().next().value);
+      }
+      return { text, parsed: parseReadSource(text), target };
+    }
+    try {
+      // A group read always rechecks access and version. Its source text is
+      // never reused from a browser cache or fetched through a repo MCP task.
+      const out = await api("POST", `/groups/${encodeURIComponent(target.groupId)}/source`, {
+        group_version: target.groupVersion, source_id: target.sourceId, file, start_line: start, end_line: end,
+      }, { signal });
+      checkSourceRead(M, seq, signal);
+      // For an individual source graph, the console may have refreshed the
+      // active source version while this request was in flight.
+      if (!M.groupId && !sourceTargetsFor(M, i).some((candidate) => candidate.groupId === target.groupId
+          && candidate.groupVersion === target.groupVersion && candidate.sourceVersion === target.sourceVersion)) throw groupInvalid();
+      if (!out || out.group_id !== target.groupId || out.version !== target.groupVersion || out.group_version !== target.groupVersion
+          || out.source_id !== target.sourceId || out.source_version !== target.sourceVersion || out.file !== file
+          || typeof out.text !== "string" || !Number.isSafeInteger(out.start_line) || !Number.isSafeInteger(out.end_line)
+          || !Number.isSafeInteger(out.line_count) || out.line_count < 0
+          || (out.line_count === 0 ? out.start_line !== 0 || out.end_line !== 0 || out.text !== ""
+            : out.start_line !== start || out.end_line !== Math.min(end, out.line_count))
+          || new TextEncoder().encode(JSON.stringify(out)).byteLength > GROUP_PAGE_BYTES) throw groupInvalid();
+      // Match the backend's Python splitlines boundaries for display. The
+      // untouched response text is retained for copying, including CRLF.
+      const lines = out.text.split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/);
+      if (lines[lines.length - 1] === "") lines.pop();
+      if (lines.length !== Math.max(0, out.end_line - out.start_line + (out.line_count ? 1 : 0))) throw groupInvalid();
+      return { text: out.text, target, parsed: {
+        file, start: out.start_line, end: out.end_line, total: out.line_count,
+        rows: lines.map((text, n) => ({ n: out.start_line + n, text })),
+      } };
+    } catch (e) {
+      checkSourceRead(M, seq, signal);
+      if (M.groupId || (!groupDenied(e) && Number(e?.status) !== 409)) throw e;
+      GX.code.cache.clear();
+      // Another accessible group may contain the same immutable source.
+    }
+  }
+  throw unavailable();
 }
 function parseLoc(loc) {
   const m = /^L(\d+)/.exec(String(loc || ""));
@@ -1624,15 +2114,16 @@ function renderSourceSection(box, i) {
   const line = parseLoc(M.loc[i]);
   const server = sourceServerFor(i);
   const wrap = el("div", { class: "gx-code-wrap" });
-  box.append(el("h4", null, t("gx.code.title"), el("span", { class: "gx-count mono" }, file ? midTrunc(file, 40) : "")), wrap);
-  if (!file || !server) { wrap.append(el("p", { class: "gx-empty" }, t("gx.code.nofile"))); return; }
+  box.append(el("h4", null, t("gx.code.title"), el("span", { class: "gx-count mono" }, file || "")), wrap);
+  if (!file) { wrap.append(el("p", { class: "gx-empty" }, t("gx.code.nofile"))); return; }
+  if (!server || !sourceTargetsFor(M, i).length) { wrap.append(el("p", { class: "gx-empty" }, t("gx.code.groupunavailable"))); return; }
   const auto = el("label", { class: "gx-code-auto" });
   const cb = el("input", { type: "checkbox" }); cb.checked = GX.code.auto;
   cb.addEventListener("change", () => { GX.code.auto = cb.checked; try { localStorage.setItem("gfy-gx-autosrc", cb.checked ? "1" : "0"); } catch {} if (cb.checked) loadSourceInto(wrap.querySelector(".gx-code-body"), i, server, file, line); });
   auto.append(cb, " ", t("gx.code.auto"));
   const body = el("div", { class: "gx-code-body" });
   wrap.append(body, auto);
-  if (GX.srcId === "all") wrap.append(el("p", { class: "gx-sub" }, tt("gx.code.hubnote", { repo: serverName(server) })));
+  if (GX.srcId === "all" && !sourceTargetsFor(M, i)[0]?.groupId) wrap.append(el("p", { class: "gx-sub" }, tt("gx.code.hubnote", { repo: serverName(server) })));
   // PDF/Office sidecar nodes cite pages ("p.3"); bundles built with make_viz's
   // --src-dir carry "L<line> (p.3)", older ones (and the hub) only the page.
   const rawLoc = String(M.loc[i] || "");
@@ -1645,22 +2136,20 @@ function renderSourceSection(box, i) {
   else body.append(el("div", { class: "btns" }, el("button", { class: "ghost mini", onclick: () => loadSourceInto(body, i, server, file, line) }, t("gx.code.view"))));
 }
 async function loadSourceInto(body, i, server, file, line, range) {
-  const start = range ? range.start : Math.max(1, line ? line - 8 : 1);
-  const end = range ? range.end : start + CODE_WINDOW - 1;
+  const M = GX.M;
+  if (!M || !body?.isConnected) return;
+  const start = Math.max(1, range ? range.start : line ? line - 8 : 1);
+  const end = Math.min(range ? range.end : start + CODE_WINDOW - 1, start + 399);
+  cancelSourceRead();
+  const controller = new AbortController(); GX.code.controller = controller;
   const seq = ++GX.code.seq;
   GX.code.range = { node: i, start, end };
   body.replaceChildren(el("p", { class: "gx-empty" }, t("gx.code.loading")));
-  const cacheKey = `${server}|${file}|${start}|${end}`;
   try {
-    let text = GX.code.cache.get(cacheKey);
-    if (text == null) {
-      const out = await api("POST", `/repos/${encodeURIComponent(server)}/source`, { file, start_line: start, end_line: end });
-      text = String(out.text || "");
-      GX.code.cache.set(cacheKey, text);
-      while (GX.code.cache.size > 60) GX.code.cache.delete(GX.code.cache.keys().next().value);
-    }
-    if (seq !== GX.code.seq) return;
-    const parsed = parseReadSource(text);
+    const { text, parsed, target } = await readSourceResult(M, i, file, start, end, seq, controller.signal);
+    checkSourceRead(M, seq, controller.signal);
+    if (!body.isConnected) return;
+    GX.code.target = target;
     body.replaceChildren();
     if (parsed.error) {
       const unavailable = /snapshot|unavailable/i.test(parsed.error);
@@ -1668,22 +2157,35 @@ async function loadSourceInto(body, i, server, file, line, range) {
       return;
     }
     GX.code.range = { node: i, start: parsed.start, end: parsed.end };
-    const pre = el("pre", { class: "gx-code" });
+    const pre = el("pre", { class: "gx-code", tabindex: "0", "aria-label": `${t("gx.code.title")}: ${file}` });
     for (const r of parsed.rows) {
-      // NB: not "row" — index.html's global .row (form rows, flex-wrap) would apply.
+      // NB: not "row"; index.html's global .row (form rows, flex-wrap) would apply.
       pre.append(el("div", { class: `gx-cl${r.n === line ? " hl" : ""}` }, el("span", { class: "ln" }, String(r.n)), el("span", { class: "tx" }, r.text || " ")));
     }
     const up = el("button", { class: "ghost mini", onclick: () => loadSourceInto(body, i, server, file, line, { start: Math.max(1, parsed.start - CODE_WINDOW), end: parsed.end }) }, t("gx.code.up"));
-    const down = el("button", { class: "ghost mini", onclick: () => loadSourceInto(body, i, server, file, line, { start: parsed.start, end: Math.min(parsed.total, parsed.end + CODE_WINDOW) }) }, t("gx.code.down"));
+    const down = el("button", { class: "ghost mini", onclick: () => {
+      const nextEnd = Math.min(parsed.total, parsed.end + CODE_WINDOW);
+      loadSourceInto(body, i, server, file, line, { start: Math.max(1, parsed.start, nextEnd - 399), end: nextEnd });
+    } }, t("gx.code.down"));
     up.disabled = parsed.start <= 1; down.disabled = parsed.end >= parsed.total;
     const nav = el("div", { class: "gx-code-nav" },
       el("span", { class: "gx-sub" }, tt("gx.code.lines", { a: parsed.start, b: parsed.end, n: parsed.total })),
       el("span", { style: "flex:1" }), up, down,
-      el("button", { class: "ghost mini", onclick: () => { copyText(parsed.rows.map((r) => r.text).join("\n")); flash("ok", t("gx.code.copied")); } }, t("gx.code.copy")));
+      el("button", { class: "ghost mini", onclick: () => { copyText(target.groupId ? text : parsed.rows.map((r) => r.text).join("\n")); flash("ok", t("gx.code.copied")); } }, t("gx.code.copy")));
     body.append(nav, pre);
-    const hl = pre.querySelector(".hl"); if (hl && !range) hl.scrollIntoView({ block: "center" });
+    if (target.groupId) body.append(el("p", { class: "gx-sub gx-source-origin" }, tt("gx.code.groupnote", {
+      group: sourceDisplayName(target.groupId, M), version: target.groupVersion, source: sourceDisplayName(target.sourceId, M),
+    })));
+    const hl = pre.querySelector(".hl");
+    if (hl && !range) {
+      // Center the cited line inside its code viewport without scrolling the
+      // inspector or page away from the selected node's origin and neighbors.
+      const row = hl.getBoundingClientRect(), viewport = pre.getBoundingClientRect();
+      pre.scrollTop += row.top - viewport.top - (pre.clientHeight - row.height) / 2;
+    }
   } catch (e) {
-    if (seq !== GX.code.seq) return;
+    if (seq !== GX.code.seq || e?.name === "AbortError" || M !== GX.M || !body.isConnected) return;
+    if (M.groupId && (groupDenied(e) || Number(e?.status) === 409)) { clearGroupAccess(e); return; }
     const msg = e && e.message ? e.message : String(e);
     body.replaceChildren(el("p", { class: "gx-empty" }, /no such repo|forbidden|403/i.test(msg) ? t("gx.code.noaccess") : `${t("gx.code.err")}: ${clean(msg, 200)}`),
       el("div", { class: "btns" }, el("button", { class: "ghost mini", onclick: () => loadSourceInto(body, i, server, file, line, range) }, t("gx.retry"))));
@@ -1693,6 +2195,8 @@ function copyContext(i) {
   const M = GX.M, lines = [];
   const file = M.files[M.f[i]];
   lines.push(`### ${M.label[i]}`, `- source: ${file}${M.loc[i] ? ":" + M.loc[i] : ""}`, `- id: ${M.id[i]}`, `- type: ${M.types[M.t[i]]}${M.kinds[M.k[i]] ? " / " + M.kinds[M.k[i]] : ""}`);
+  if (M.groupId) lines.push(`- group: ${M.groupId}`, `- group_version: ${M.groupVersion}`,
+    `- source_id: ${M.provenance[i].source_id}`, `- source_version: ${M.provenance[i].source_version}`);
   const cm = M.commByCid.get(M.c[i]); if (cm) lines.push(`- community: ${communityLabel(cm)}`);
   const groups = new Map();
   for (let p = M.adj.off[i]; p < M.adj.off[i + 1]; p++) {
@@ -1719,7 +2223,7 @@ function buildSearchIndex() {
 function runSearch(q) {
   const box = $("gx-search-results"); box.replaceChildren(); searchActive = -1; searchHits = [];
   const M = GX.M; q = (q || "").trim().toLowerCase();
-  if (!M || q.length < 1) { box.hidden = true; return; }
+  if (!M || q.length < 1) { closeSearch(); return; }
   if (!M.search) buildSearchIndex();
   const hits = [];
   for (let i = 0; i < M.n; i++) {
@@ -1731,7 +2235,10 @@ function runSearch(q) {
   hits.sort((a, b) => a.score - b.score || M.deg[b.i] - M.deg[a.i]);
   searchHits = hits.slice(0, 40).map((h) => h.i);
   for (const i of searchHits) {
-    const row = clickable(el("div", { class: "gx-sr", onclick: () => pickSearch(i) }));
+    const row = clickable(el("div", { class: "gx-sr", onclick: () => pickSearch(i),
+      title: `${M.label[i]}\n${M.files[M.f[i]]}`, "aria-label": `${M.label[i]}, ${M.files[M.f[i]]}` }));
+    row.id = `gx-search-hit-${i}`; row.tabIndex = -1;
+    row.setAttribute("role", "option"); row.setAttribute("aria-selected", "false");
     row.append(
       el("span", { class: "sw", style: `background:${colorOfCat(catOfNode(i))}` }),
       el("span", { class: "lb" }, midTrunc(M.label[i], 60)),
@@ -1740,9 +2247,16 @@ function runSearch(q) {
   }
   if (hits.length > searchHits.length) box.append(el("div", { class: "gx-sr", style: "color:var(--muted); cursor:default;" }, `+${fmtN(hits.length - searchHits.length)}`));
   box.hidden = !searchHits.length;
+  $("gx-search").setAttribute("aria-expanded", String(!box.hidden));
+  $("gx-search").removeAttribute("aria-activedescendant");
+}
+function closeSearch() {
+  $("gx-search-results").hidden = true;
+  $("gx-search").setAttribute("aria-expanded", "false");
+  $("gx-search").removeAttribute("aria-activedescendant");
 }
 function pickSearch(i) {
-  $("gx-search-results").hidden = true; $("gx-search").value = "";
+  closeSearch(); $("gx-search").value = "";
   revealNode(i);
 }
 function searchKey(e) {
@@ -1752,10 +2266,11 @@ function searchKey(e) {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     searchActive = Math.max(0, Math.min(searchHits.length - 1, searchActive + (e.key === "ArrowDown" ? 1 : -1)));
-    rows.forEach((r, k) => r.classList.toggle("active", k === searchActive));
+    rows.forEach((r, k) => { r.classList.toggle("active", k === searchActive); if (r.hasAttribute("role")) r.setAttribute("aria-selected", String(k === searchActive)); });
+    if (rows[searchActive]) e.target.setAttribute("aria-activedescendant", rows[searchActive].id);
     rows[searchActive] && rows[searchActive].scrollIntoView({ block: "nearest" });
   } else if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); pickSearch(searchHits[Math.max(0, searchActive)]); }
-  else if (e.key === "Escape") { box.hidden = true; e.target.blur(); }
+  else if (e.key === "Escape") { closeSearch(); e.target.blur(); }
 }
 
 /* ---------------- export / fullscreen / keyboard ---------------- */
@@ -1784,6 +2299,7 @@ function toggleFullscreen(force) {
   const gx = $("gx");
   const on = force != null ? force : !gx.classList.contains("fullscreen");
   gx.classList.toggle("fullscreen", on);
+  $("gx-full").setAttribute("aria-pressed", String(on));
   document.body.style.overflow = on ? "hidden" : "";
   requestAnimationFrame(() => { if (GX.renderer) { GX.renderer.resize(); GX.renderer.refresh(); } });
 }
@@ -1816,13 +2332,25 @@ function toggleLabels() {
 function renderSourcePicker() {
   const sel = $("gx-source"); const cur = sel.value || GX.srcId;
   sel.replaceChildren();
-  const servers = (S.servers || []).filter((s) => s.kind === "repo");
+  const serverMap = new Map((S.servers || []).filter((s) => s.kind === "repo").map((s) => [s.server_id, s]));
+  for (const repo of S.repos || []) if (!serverMap.has(repo.repo_id)) serverMap.set(repo.repo_id, { server_id: repo.repo_id });
+  const servers = [...serverMap.values()];
   const mine = new Set(servers.map((s) => s.server_id));
   sel.append(el("option", { value: "all", "data-sub": "all" }, t("gx.src.hub")));
   if (servers.length) {
     const og = el("optgroup", { label: t("gx.src.mine") });
     for (const s of servers.slice().sort((a, b) => serverName(a.server_id).localeCompare(serverName(b.server_id)))) {
       og.append(el("option", { value: s.server_id, "data-sub": s.server_id }, serverName(s.server_id)));
+    }
+    sel.append(og);
+  }
+  const groupMap = new Map((S.groups || []).map((g) => [g.group_id, g]));
+  for (const server of S.servers || []) if (server.kind === "group" && !groupMap.has(server.server_id)) groupMap.set(server.server_id, { ...server, group_id: server.server_id });
+  if (groupMap.size) {
+    const og = el("optgroup", { label: t("gx.src.groups") });
+    for (const g of [...groupMap.values()].sort((a, b) => String(a.name || a.group_id).localeCompare(String(b.name || b.group_id)))) {
+      og.append(el("option", { value: g.group_id, "data-sub": `${g.group_id} / ${g.status || "DRAFT"}` },
+        `${g.name || g.group_id} (${g.access_recovery ? t("gx.group.denied") : g.status || "DRAFT"})`));
     }
     sel.append(og);
   }
@@ -1837,7 +2365,23 @@ function renderSourcePicker() {
   if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(el("option", { value: cur }, cur));
   if (cur) sel.value = cur;
 }
+function labelControls() {
+  for (const [id, key] of [
+    ["gx-fit", "gx.fit"], ["gx-zoom-in", "gx.zoom.in"], ["gx-zoom-out", "gx.zoom.out"],
+    ["gx-labels", "gx.labels"], ["gx-full", "gx.fullscreen"], ["gx-search", "gx.search.ph"],
+    ["gx-color", "gx.color"], ["gx-legend-filter", "gx.legend.search"],
+    ["gx-search-results", "gx.search.results"], ["gx-view", "gx.view.select"],
+  ]) $(id)?.setAttribute("aria-label", t(key));
+}
 function wire() {
+  labelControls();
+  $("gx-view").setAttribute("role", "group");
+  $("gx-full").setAttribute("aria-pressed", "false");
+  $("gx-search").setAttribute("role", "combobox");
+  $("gx-search").setAttribute("aria-autocomplete", "list");
+  $("gx-search").setAttribute("aria-controls", "gx-search-results");
+  $("gx-search").setAttribute("aria-expanded", "false");
+  $("gx-search-results").setAttribute("role", "listbox");
   $("gx-load").onclick = () => loadSource($("gx-source").value, { force: true });
   $("gx-source").addEventListener("change", () => loadSource($("gx-source").value));
   $("gx-view").querySelectorAll("button").forEach((b) => {
@@ -1863,7 +2407,7 @@ function wire() {
   $("gx-search").addEventListener("input", (e) => runSearch(e.target.value));
   $("gx-search").addEventListener("keydown", searchKey);
   $("gx-search").addEventListener("focus", (e) => { if (e.target.value) runSearch(e.target.value); });
-  document.addEventListener("click", (e) => { if (!e.target.closest(".gx-tb-search")) $("gx-search-results").hidden = true; });
+  document.addEventListener("click", (e) => { if (!e.target.closest(".gx-tb-search")) closeSearch(); });
   $("gx-fit").onclick = () => fitView();
   $("gx-zoom-in").onclick = () => GX.renderer && GX.renderer.getCamera().animatedZoom(anim(200));
   $("gx-zoom-out").onclick = () => GX.renderer && GX.renderer.getCamera().animatedUnzoom(anim(200));
@@ -1876,45 +2420,102 @@ function wire() {
 }
 let wired = false;
 const GraphExplorer = {
+  reset() {
+    // Auth boundaries invalidate every read, including ordinary repo reads.
+    // Keep event handlers wired once; a later account starts with empty data.
+    GX.shown = false; GX.resetPending = true; ++GX.loadSeq;
+    GX.loadController?.abort(); GX.loadController = null; GX.loading = false;
+    clearTimeout(GX.pollTimer); GX.pollTimer = 0;
+    clearModel(); GX.cache.clear();
+    GX.srcId = ""; GX.route = ""; GX.originSource = "";
+    GX.view = { mode: "groups", scope: { kind: "all" } };
+    GX.filters = { types: new Set(), relations: new Set(), repos: new Set(), legend: new Set(), minDeg: 0, inferred: true };
+    GX.simple = false; GX.warnedBig = false; GX.isGroupView = false; GX.isCommunityView = false;
+    legendLimit = 60;
+    for (const id of ["gx-source", "gx-source-list", "gx-overlay-card"]) $(id)?.replaceChildren();
+    if ($("gx-source")) { $("gx-source").value = ""; $("gx-source").title = ""; }
+    // The console mirrors native selects into a combobox. Empty its visible
+    // text before blur so a partially typed old label cannot select a source.
+    const sourceInput = $("gx-source-combo");
+    if (sourceInput) { sourceInput.value = ""; sourceInput.placeholder = ""; sourceInput.title = ""; sourceInput.blur(); sourceInput.ariaExpanded = "false"; }
+    if ($("gx-source-list")) $("gx-source-list").hidden = true;
+    if ($("gx-overlay")) $("gx-overlay").hidden = true;
+    if ($("gx-legend-filter")) $("gx-legend-filter").value = "";
+    if ($("gx-search")) $("gx-search").removeAttribute("aria-activedescendant");
+    if ($("gx-mindeg")) $("gx-mindeg").value = "0";
+    if ($("gx-mindeg-val")) $("gx-mindeg-val").textContent = "0";
+    if ($("gx-inferred")) $("gx-inferred").checked = true;
+    if ($("gx-simple")) $("gx-simple").checked = false;
+    if ($("gx")?.classList.contains("fullscreen")) { $("gx").classList.remove("fullscreen"); document.body.style.overflow = ""; }
+    if ($("gx-full")) $("gx-full").setAttribute("aria-pressed", "false");
+    try { sessionStorage.removeItem("gfy-gx-src"); } catch {}
+    try { if (/^#graph(?:\/|$)/.test(location.hash)) history.replaceState(null, "", "#graph"); } catch {}
+  },
   onShow() {
-    GX.shown = true;
+    GX.shown = true; GX.resetPending = false;
     if (!wired) { wired = true; wire(); }
     renderSourcePicker();
-    if (!libsReady()) { showOverlay("error", GX.libsError === "webgl" ? t("gx.err.webgl") : t("gx.err.libs")); return; }
-    if (GX.renderer) requestAnimationFrame(() => { GX.renderer.resize(); GX.renderer.refresh(); });
+    if (GX.renderer) requestAnimationFrame(() => { if (GX.renderer && GX.shown) { GX.renderer.resize(); GX.renderer.refresh(); } });
     if (!GX.M && !GX.loading) {
       showOverlay("card", t("gx.empty.title"), t("gx.empty.body"));
       // Deferred so an open(serverId) issued in the same tick (openGraph from
       // a source row) wins instead of racing a second download.
+      const seq = GX.loadSeq;
       setTimeout(() => {
-        if (GX.M || GX.loading) return;
+        if (!GX.shown || seq !== GX.loadSeq || GX.M || GX.loading) return;
         let want = "";
         const m = /^#graph\/([^/]+)/.exec(location.hash || "");
         if (m) { try { want = decodeURIComponent(m[1]); } catch {} }
         if (!want) { try { want = sessionStorage.getItem("gfy-gx-src") || ""; } catch {} }
         const sel = $("gx-source");
-        if (want && [...sel.options].some((o) => o.value === want)) loadSource(want);
+        if (want && ([...sel.options].some((o) => o.value === want) || isGroupSource(want))) loadSource(want, { sourceId: GX.originSource });
       }, 0);
     }
   },
-  onHide() { GX.shown = false; if ($("gx").classList.contains("fullscreen")) toggleFullscreen(false); },
+  onHide() {
+    GX.shown = false;
+    GX.loadController?.abort(); ++GX.loadSeq; GX.loading = false;
+    clearTimeout(GX.pollTimer); cancelSourceRead();
+    // Reopening a group rechecks access instead of reviving its old graph.
+    if (isGroupSource(GX.srcId)) clearModel();
+    if ($("gx").classList.contains("fullscreen")) toggleFullscreen(false);
+  },
   onData() {
-    if (!wired) return;
+    if (!wired || GX.resetPending) return;
+    labelControls();
     renderSourcePicker();
+    if (GX.loading && isGroupSource(GX.srcId) && Array.isArray(S.groups)) {
+      const meta = groupMetaFor(GX.srcId);
+      if (!meta || meta.access_recovery) { clearGroupAccess({ status: 403 }); return; }
+      if (!groupReady(meta) || (GX.info && (meta.active_version !== GX.info.active_version || meta.revision !== GX.info.revision))) {
+        clearGroupAccess({ status: 409 }); return;
+      }
+    }
+    if (GX.M?.groupId && Array.isArray(S.groups)) {
+      const meta = groupMetaFor(GX.M.groupId);
+      if (!meta || meta.access_recovery) { clearGroupAccess({ status: 403 }); return; }
+      if (!groupReady(meta) || meta.active_version !== GX.M.groupVersion) { clearGroupAccess({ status: 409 }); return; }
+    }
+    if (GX.M && GX.code.target?.groupId && GX.code.range
+        && !sourceTargetsFor(GX.M, GX.code.range.node).some((target) => target.groupId === GX.code.target.groupId
+          && target.groupVersion === GX.code.target.groupVersion && target.sourceVersion === GX.code.target.sourceVersion)) {
+      GX.code.range = null; GX.code.cache.clear(); renderInspector();
+    }
     // render() runs on every console data refresh (12 s build polling, tab
-    // actions) — only a LANGUAGE change warrants re-labelling the whole view;
+    // actions); only a LANGUAGE change warrants re-labelling the whole view;
     // otherwise the inspector (and a paged source window) must stay put.
     const lang = typeof LANG === "undefined" ? "ko" : LANG;
     if (GX.M && GX.renderer && lang !== GX.lang) applyView({ fit: false });
     GX.lang = lang;
   },
-  open(serverId) {
+  open(serverId, { sourceId = "" } = {}) {
+    GX.resetPending = false;
     if (!wired) { wired = true; wire(); }
     renderSourcePicker();
     const sel = $("gx-source");
     if (![...sel.options].some((o) => o.value === serverId)) sel.append(el("option", { value: serverId }, serverId));
     sel.value = serverId;
-    if (GX.srcId !== serverId || !GX.M) loadSource(serverId);
+    if (isGroupSource(serverId) || GX.srcId !== serverId || !GX.M) return loadSource(serverId, { sourceId });
   },
 };
 // Debug/test hook (state only; presigned URLs are dropped after use).
